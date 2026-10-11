@@ -7,6 +7,7 @@ import {
   effect,
   inject,
   input,
+  linkedSignal,
   signal,
 } from '@angular/core';
 import { ACTIVE_STATES, Api, ApiError, ChannelView } from './api';
@@ -85,8 +86,11 @@ const STATE_LABEL: Record<string, string> = {
       <div class="progress" [class.paused]="j?.state === 'cooling'" role="progressbar"
         [attr.aria-valuenow]="j?.done ?? 0" [attr.aria-valuemax]="j?.total ?? 0">
         @if (j?.state === 'cooling') {
-          <!-- Отсчёт паузы: одна анимация ширины на всё время паузы. -->
-          <span class="bar countdown" [style.animation-duration.ms]="cooldownMs()"></span>
+          <!-- Отсчёт паузы: одна анимация ширины на всё время паузы. Новая
+               пауза (другой cooldownUntil) — новый элемент и новая анимация. -->
+          @for (p of pauses(); track p.until) {
+            <span class="bar countdown" [style.animation-duration.ms]="p.ms"></span>
+          }
         } @else {
           <span class="bar" [style.width.%]="percent()"></span>
         }
@@ -331,10 +335,17 @@ export class ChannelRow {
     return j && j.total > 0 ? (j.done / j.total) * 100 : 0;
   });
 
-  // Сколько длится пауза — от момента, когда её увидели, до конца.
-  protected readonly cooldownMs = computed(() => {
-    const until = this.channel().job?.cooldownUntil;
-    return until ? Math.max(0, new Date(until).getTime() - Date.now()) : 0;
+  // Пауза: до какого времени и сколько её осталось в момент, когда её
+  // увидели. Длительность считается один раз на каждый cooldownUntil:
+  // снимки SSE приходят и посреди паузы, и пересчёт укорачивал бы
+  // идущую анимацию — полоска прыгала бы вперёд.
+  protected readonly pauses = linkedSignal<string | undefined, { until: string; ms: number }[]>({
+    source: () => this.channel().job?.cooldownUntil,
+    computation: (until, previous) => {
+      // Вход меняется на каждом снимке — та же пауза оставляет прежнюю длительность.
+      if (previous && previous.source === until) return previous.value;
+      return until ? [{ until, ms: Math.max(0, new Date(until).getTime() - Date.now()) }] : [];
+    },
   });
 
   protected readonly remaining = computed(() => {
