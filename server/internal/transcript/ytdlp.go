@@ -13,10 +13,11 @@ import (
 	"time"
 )
 
-// YtDlp — запасной путь через yt-dlp. Он сам добывает PO-токены и быстрее
-// успевает за изменениями YouTube, но медленнее: 4–5 запросов и 5–20 с на
-// видео против двух запросов и секунды у основного пути. yt-dlp только
-// отдаёт список дорожек (-J), саму дорожку качает этот же код.
+// YtDlp — запасной путь через yt-dlp.
+// Он сам добывает PO-токены и быстрее подстраивается под изменения YouTube.
+// Зато он медленнее: 4–5 запросов и 5–20 с на видео, а у основного пути два запроса и около секунды.
+// yt-dlp только отдаёт список дорожек (-J).
+// Саму дорожку качает наш код.
 type YtDlp struct {
 	Path    string
 	HTTP    *http.Client
@@ -24,7 +25,7 @@ type YtDlp struct {
 	Timeout time.Duration
 }
 
-// FindYtDlp — путь к yt-dlp в PATH или пустая строка.
+// FindYtDlp возвращает путь к yt-dlp из PATH или пустую строку.
 func FindYtDlp() string {
 	path, err := exec.LookPath("yt-dlp")
 	if err != nil {
@@ -33,32 +34,34 @@ func FindYtDlp() string {
 	return path
 }
 
-type ytdlpTrack struct {
+// ytdlpFormat — один вариант дорожки в выводе yt-dlp.
+type ytdlpFormat struct {
 	Ext string `json:"ext"`
 	URL string `json:"url"`
 }
 
+// ytdlpInfo — нужные поля вывода yt-dlp -J.
 type ytdlpInfo struct {
-	Language          string                  `json:"language"`
-	Subtitles         map[string][]ytdlpTrack `json:"subtitles"`
-	AutomaticCaptions map[string][]ytdlpTrack `json:"automatic_captions"`
+	Language          string                   `json:"language"`
+	Subtitles         map[string][]ytdlpFormat `json:"subtitles"`
+	AutomaticCaptions map[string][]ytdlpFormat `json:"automatic_captions"`
 }
 
 // Fetch скачивает субтитры видео через yt-dlp.
-func (y *YtDlp) Fetch(ctx context.Context, videoID string) (*Transcript, error) {
-	timeout := y.Timeout
+func (ytdlp *YtDlp) Fetch(ctx context.Context, videoID string) (*Transcript, error) {
+	timeout := ytdlp.Timeout
 	if timeout == 0 {
 		timeout = 60 * time.Second
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, y.Path,
+	cmd := exec.CommandContext(ctx, ytdlp.Path,
 		"--ignore-config", "--no-playlist", "--skip-download", "-J",
 		"--extractor-args", "youtube:skip=hls,dash,translated_subs",
 		"https://www.youtube.com/watch?v="+videoID)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
-	out, err := cmd.Output()
+	output, err := cmd.Output()
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, fmt.Errorf("yt-dlp: %w", ctx.Err())
@@ -66,14 +69,14 @@ func (y *YtDlp) Fetch(ctx context.Context, videoID string) (*Transcript, error) 
 		return nil, ytdlpError(stderr.String(), err)
 	}
 	var info ytdlpInfo
-	if err := json.Unmarshal(out, &info); err != nil {
+	if err := json.Unmarshal(output, &info); err != nil {
 		return nil, fmt.Errorf("yt-dlp: ответ не разобран: %w", err)
 	}
-	track, ok := info.pick(y.Langs)
+	track, ok := info.pick(ytdlp.Langs)
 	if !ok {
 		return nil, ErrNoTranscript
 	}
-	httpClient := y.HTTP
+	httpClient := ytdlp.HTTP
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 30 * time.Second}
 	}
@@ -108,103 +111,104 @@ func (y *YtDlp) Fetch(ctx context.Context, videoID string) (*Transcript, error) 
 	return &Transcript{Lang: track.Lang, Auto: track.Auto, Lines: lines}, nil
 }
 
-// pick выбирает дорожку по тем же правилам, что pickTrack. Исходную
-// речь yt-dlp помечает в automatic_captions ключом «<язык>-orig»; без него
-// язык речи — поле language. Остальные автоматические — машинные переводы.
+// pick выбирает дорожку по тем же правилам, что pickTrack.
+// Исходную речь yt-dlp помечает в automatic_captions ключом «<язык>-orig».
+// Если такого ключа нет, язык речи берётся из поля language.
+// Остальные автоматические дорожки — машинные переводы.
 func (info ytdlpInfo) pick(langs []string) (Track, bool) {
-	srv1 := func(tracks []ytdlpTrack) string {
-		for _, t := range tracks {
-			if t.Ext == "srv1" {
-				return t.URL
+	srv1URL := func(formats []ytdlpFormat) string {
+		for _, format := range formats {
+			if format.Ext == "srv1" {
+				return format.URL
 			}
 		}
 		return ""
 	}
-	speech := info.Language
+	speechLang := info.Language
 	autoKey := ""
-	for key := range info.AutomaticCaptions {
-		if lang, ok := strings.CutSuffix(key, "-orig"); ok {
-			speech, autoKey = lang, key
+	for captionKey := range info.AutomaticCaptions {
+		if lang, ok := strings.CutSuffix(captionKey, "-orig"); ok {
+			speechLang, autoKey = lang, captionKey
 			break
 		}
 	}
-	if autoKey == "" && speech != "" {
-		if _, ok := info.AutomaticCaptions[speech]; ok {
-			autoKey = speech
+	if autoKey == "" && speechLang != "" {
+		if _, ok := info.AutomaticCaptions[speechLang]; ok {
+			autoKey = speechLang
 		}
 	}
 
 	var tracks []Track
-	for lang, list := range info.Subtitles {
-		if u := srv1(list); u != "" && lang != "live_chat" {
-			tracks = append(tracks, Track{Lang: lang, URL: u})
+	for lang, formats := range info.Subtitles {
+		if trackURL := srv1URL(formats); trackURL != "" && lang != "live_chat" {
+			tracks = append(tracks, Track{Lang: lang, URL: trackURL})
 		}
 	}
-	// Порядок ключей map случаен — сортируем, чтобы «первая ручная» была
+	// Порядок ключей map случаен. Сортируем, чтобы «первая ручная» была
 	// всегда одной и той же.
-	slices.SortFunc(tracks, func(a, b Track) int { return strings.Compare(a.Lang, b.Lang) })
+	slices.SortFunc(tracks, func(left, right Track) int { return strings.Compare(left.Lang, right.Lang) })
 	if autoKey != "" {
-		if u := srv1(info.AutomaticCaptions[autoKey]); u != "" {
-			tracks = append(tracks, Track{Lang: speech, Auto: true, URL: u})
+		if trackURL := srv1URL(info.AutomaticCaptions[autoKey]); trackURL != "" {
+			tracks = append(tracks, Track{Lang: speechLang, Auto: true, URL: trackURL})
 		}
 	}
 	if len(tracks) == 0 {
 		return Track{}, false
 	}
-	// Без автоматической дорожки язык речи знает только yt-dlp (language) —
-	// он важнее желаемых языков.
-	if speech != "" {
-		langs = append([]string{speech}, langs...)
+	// Без автоматической дорожки язык речи знает только yt-dlp, это поле language.
+	// Оно важнее желаемых языков.
+	if speechLang != "" {
+		langs = append([]string{speechLang}, langs...)
 	}
 	return pickTrack(tracks, langs), true
 }
 
 // ytdlpError переводит последнюю ошибку yt-dlp в ошибки пакета.
 func ytdlpError(stderr string, err error) error {
-	last := ""
+	lastErrorLine := ""
 	for line := range strings.Lines(stderr) {
 		if strings.HasPrefix(line, "ERROR:") {
-			last = strings.TrimSpace(line)
+			lastErrorLine = strings.TrimSpace(line)
 		}
 	}
-	lower := strings.ToLower(last)
+	lowered := strings.ToLower(lastErrorLine)
 	switch {
-	case strings.Contains(lower, "not a bot"), strings.Contains(lower, "429"), strings.Contains(lower, "too many requests"):
+	case strings.Contains(lowered, "not a bot"), strings.Contains(lowered, "429"), strings.Contains(lowered, "too many requests"):
 		return ErrBlocked
-	case strings.Contains(lower, "confirm your age"), strings.Contains(lower, "age-restricted"),
-		strings.Contains(lower, "age restricted"), strings.Contains(lower, "inappropriate"):
+	case strings.Contains(lowered, "confirm your age"), strings.Contains(lowered, "age-restricted"),
+		strings.Contains(lowered, "age restricted"), strings.Contains(lowered, "inappropriate"):
 		return ErrAgeRestricted
-	case strings.Contains(lower, "unavailable"), strings.Contains(lower, "private video"), strings.Contains(lower, "removed"):
-		return fmt.Errorf("%w: %s", ErrUnavailable, last)
-	case last != "":
-		return errors.New("yt-dlp: " + strings.TrimPrefix(last, "ERROR: "))
+	case strings.Contains(lowered, "unavailable"), strings.Contains(lowered, "private video"), strings.Contains(lowered, "removed"):
+		return fmt.Errorf("%w: %s", ErrUnavailable, lastErrorLine)
+	case lastErrorLine != "":
+		return errors.New("yt-dlp: " + strings.TrimPrefix(lastErrorLine, "ERROR: "))
 	}
 	return fmt.Errorf("yt-dlp: %w", err)
 }
 
-// Fallback — основной загрузчик, а при сбое формата или протокола — запасной.
-// Блокировку адреса и отсутствие сети запасной не лечит (тот же адрес и та
-// же сеть, только больше запросов), поэтому при ErrBlocked, ErrNetwork и
-// окончательных ответах он не зовётся.
+// Fallback пробует основной загрузчик, а при сбое формата или протокола берёт запасной.
+// Блокировку адреса и отсутствие сети запасной не лечит.
+// Адрес и сеть те же, запросов только больше.
+// Поэтому при ErrBlocked, ErrNetwork и окончательных ответах запасной не вызывается.
 type Fallback struct {
 	Primary, Secondary interface {
 		Fetch(ctx context.Context, videoID string) (*Transcript, error)
 	}
 }
 
-// Fetch — см. Fallback.
-func (f Fallback) Fetch(ctx context.Context, videoID string) (*Transcript, error) {
-	t, err := f.Primary.Fetch(ctx, videoID)
-	if err == nil || isFinal(err) || errors.Is(err, ErrNetwork) || ctx.Err() != nil {
-		return t, err
+// Fetch работает по правилам, описанным у Fallback.
+func (fallback Fallback) Fetch(ctx context.Context, videoID string) (*Transcript, error) {
+	primaryTranscript, primaryErr := fallback.Primary.Fetch(ctx, videoID)
+	if primaryErr == nil || isFinal(primaryErr) || errors.Is(primaryErr, ErrNetwork) || ctx.Err() != nil {
+		return primaryTranscript, primaryErr
 	}
-	t2, err2 := f.Secondary.Fetch(ctx, videoID)
+	secondaryTranscript, secondaryErr := fallback.Secondary.Fetch(ctx, videoID)
 	switch {
-	case err2 == nil:
-		return t2, nil
-	case isFinal(err2):
-		// Запасной путь знает точнее: блокировка, нет субтитров, 18+.
-		return nil, err2
+	case secondaryErr == nil:
+		return secondaryTranscript, nil
+	case isFinal(secondaryErr):
+		// Запасной путь знает точнее, например про блокировку, отсутствие субтитров или 18+.
+		return nil, secondaryErr
 	}
-	return nil, fmt.Errorf("%w (запасной путь: %v)", err, err2)
+	return nil, fmt.Errorf("%w (запасной путь: %v)", primaryErr, secondaryErr)
 }

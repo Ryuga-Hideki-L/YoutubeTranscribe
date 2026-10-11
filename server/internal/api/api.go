@@ -1,11 +1,11 @@
 // Package api — HTTP API для интерфейса: каналы, индексация, поиск и поток
 // изменений (SSE).
 //
-// Сервер слушает только loopback, но это не защищает от чужих страниц в
-// браузере: они могут слать запросы на 127.0.0.1. Поэтому Guard пускает
-// только запросы с локальным Host (против DNS rebinding), отклоняет
-// Sec-Fetch-Site: cross-site, а меняющие запросы принимает лишь с JSON —
-// такой запрос чужая страница без preflight CORS не отправит.
+// Сервер слушает только loopback, но чужая страница в браузере всё равно может
+// слать запросы на 127.0.0.1. Guard защищает от этого тремя проверками.
+// Host должен быть локальным, это закрывает DNS rebinding. Запросы с
+// Sec-Fetch-Site: cross-site отклоняются. Меняющие запросы принимаются только
+// с JSON, а такой запрос чужая страница без preflight CORS отправить не может.
 package api
 
 import (
@@ -29,36 +29,36 @@ const MaxLimit = 1000
 // Server — обработчики API.
 type Server struct {
 	lib          *library.Library
-	ix           *indexer.Indexer
-	yt           *youtube.Client
+	indexing     *indexer.Indexer
+	dataAPI      *youtube.Client
 	defaultLimit int
 	shutdown     chan struct{}
 }
 
-// New создаёт API. Shutdown закрывает открытые потоки SSE.
-func New(lib *library.Library, ix *indexer.Indexer, yt *youtube.Client, defaultLimit int) *Server {
-	return &Server{lib: lib, ix: ix, yt: yt, defaultLimit: defaultLimit, shutdown: make(chan struct{})}
+// New создаёт API. Значение defaultLimit берётся, если клиент не указал лимит.
+func New(lib *library.Library, indexing *indexer.Indexer, dataAPI *youtube.Client, defaultLimit int) *Server {
+	return &Server{lib: lib, indexing: indexing, dataAPI: dataAPI, defaultLimit: defaultLimit, shutdown: make(chan struct{})}
 }
 
-// Shutdown завершает потоки SSE — иначе http.Server.Shutdown ждал бы их вечно.
-func (s *Server) Shutdown() { close(s.shutdown) }
+// Shutdown завершает потоки SSE. Без этого http.Server.Shutdown ждал бы их вечно.
+func (server *Server) Shutdown() { close(server.shutdown) }
 
 // Register вешает обработчики на mux.
-func (s *Server) Register(mux *http.ServeMux) {
-	mux.HandleFunc("GET /api/state", s.state)
-	mux.HandleFunc("GET /api/events", s.events)
-	mux.HandleFunc("GET /api/search", s.search)
-	mux.HandleFunc("POST /api/resolve", s.resolve)
-	mux.HandleFunc("POST /api/channels", s.add)
-	mux.HandleFunc("POST /api/channels/{id}/refresh", s.refresh)
-	mux.HandleFunc("POST /api/channels/{id}/cancel", s.cancel)
-	mux.HandleFunc("DELETE /api/channels/{id}", s.remove)
+func (server *Server) Register(mux *http.ServeMux) {
+	mux.HandleFunc("GET /api/state", server.state)
+	mux.HandleFunc("GET /api/events", server.events)
+	mux.HandleFunc("GET /api/search", server.search)
+	mux.HandleFunc("POST /api/resolve", server.resolve)
+	mux.HandleFunc("POST /api/channels", server.add)
+	mux.HandleFunc("POST /api/channels/{id}/refresh", server.refresh)
+	mux.HandleFunc("POST /api/channels/{id}/cancel", server.cancel)
+	mux.HandleFunc("DELETE /api/channels/{id}", server.remove)
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "нет такого метода API")
 	})
 }
 
-// Guard — защита от чужих страниц и DNS rebinding (см. описание пакета).
+// Guard защищает от чужих страниц и DNS rebinding. Подробности в описании пакета.
 func Guard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !localHost(r.Host) {
@@ -66,13 +66,16 @@ func Guard(next http.Handler) http.Handler {
 			return
 		}
 		if strings.HasPrefix(r.URL.Path, "/api/") {
-			if site := r.Header.Get("Sec-Fetch-Site"); site != "" && site != "same-origin" && site != "none" {
+			// Пускаем same-origin и none (адрес набран вручную). Остальное,
+			// включая same-site, отклоняем.
+			fetchSite := r.Header.Get("Sec-Fetch-Site")
+			if fetchSite != "" && fetchSite != "same-origin" && fetchSite != "none" {
 				writeError(w, http.StatusForbidden, "cross_site", "запрос с чужого сайта")
 				return
 			}
 			if r.Method == http.MethodPost {
-				mt, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
-				if mt != "application/json" {
+				mediaType, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
+				if mediaType != "application/json" {
 					writeError(w, http.StatusUnsupportedMediaType, "json_only", "нужен Content-Type: application/json")
 					return
 				}
@@ -82,6 +85,8 @@ func Guard(next http.Handler) http.Handler {
 	})
 }
 
+// localHost проверяет, что Host указывает на этот компьютер.
+// Подходят localhost, любой *.localhost и адреса loopback.
 func localHost(hostport string) bool {
 	host, _, err := net.SplitHostPort(hostport)
 	if err != nil {
@@ -95,13 +100,14 @@ func localHost(hostport string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// ChannelView — канал в библиотеке и его задание.
+// ChannelView — канал из библиотеки и его задание на индексацию.
 type ChannelView struct {
 	library.Summary
 	Job *indexer.Job `json:"job,omitempty"`
 }
 
-// State — всё, что нужно интерфейсу о библиотеке; приходит и потоком SSE.
+// State — всё, что интерфейсу нужно знать о библиотеке.
+// Приходит и обычным ответом, и потоком SSE.
 type State struct {
 	HasKey       bool          `json:"hasKey"`
 	DefaultLimit int           `json:"defaultLimit"`
@@ -110,44 +116,45 @@ type State struct {
 	Channels     []ChannelView `json:"channels"`
 }
 
-func (s *Server) snapshot() State {
-	jobs := s.ix.Jobs()
-	st := State{
-		HasKey:       s.yt.HasKey(),
-		DefaultLimit: s.defaultLimit,
-		BlockedUntil: s.ix.BlockedUntil(),
-		Restricted:   s.ix.Restricted(),
+func (server *Server) snapshot() State {
+	jobs := server.indexing.Jobs()
+	state := State{
+		HasKey:       server.dataAPI.HasKey(),
+		DefaultLimit: server.defaultLimit,
+		BlockedUntil: server.indexing.BlockedUntil(),
+		Restricted:   server.indexing.Restricted(),
 		Channels:     []ChannelView{},
 	}
-	for _, sum := range s.lib.Summaries() {
-		cv := ChannelView{Summary: sum}
-		if j, ok := jobs[sum.ID]; ok {
-			cv.Job = &j
+	for _, summary := range server.lib.Summaries() {
+		view := ChannelView{Summary: summary}
+		if job, ok := jobs[summary.ID]; ok {
+			view.Job = &job
 		}
-		st.Channels = append(st.Channels, cv)
+		state.Channels = append(state.Channels, view)
 	}
-	return st
+	return state
 }
 
-func (s *Server) state(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.snapshot())
+func (server *Server) state(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, server.snapshot())
 }
 
-// events — поток SSE: полный снимок при подключении (EventSource сам
-// переподключается после сна) и после каждого изменения, не чаще 4 раз в
-// секунду. Пока ничего не меняется, обработчик просто ждёт — без таймеров.
-func (s *Server) events(w http.ResponseWriter, r *http.Request) {
-	h := w.Header()
-	h.Set("Content-Type", "text/event-stream")
-	h.Set("Cache-Control", "no-cache")
-	h.Set("X-Accel-Buffering", "no")
-	rc := http.NewResponseController(w)
+// events — поток SSE. При подключении отправляется полный снимок, потом ещё
+// один после каждого изменения. EventSource сам переподключается после сна.
+// Снимки идут не чаще 4 раз в секунду. Пока ничего не меняется, обработчик
+// просто ждёт, без таймеров.
+func (server *Server) events(w http.ResponseWriter, r *http.Request) {
+	header := w.Header()
+	header.Set("Content-Type", "text/event-stream")
+	header.Set("Cache-Control", "no-cache")
+	header.Set("X-Accel-Buffering", "no")
+	flusher := http.NewResponseController(w)
 
-	changed, unsubscribe := s.ix.Subscribe()
+	changed, unsubscribe := server.indexing.Subscribe()
 	defer unsubscribe()
 
-	send := func() bool {
-		raw, err := json.Marshal(s.snapshot())
+	sendSnapshot := func() bool {
+		raw, err := json.Marshal(server.snapshot())
 		if err != nil {
 			return false
 		}
@@ -160,9 +167,9 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		if _, err := w.Write([]byte("\n\n")); err != nil {
 			return false
 		}
-		return rc.Flush() == nil
+		return flusher.Flush() == nil
 	}
-	if !send() {
+	if !sendSnapshot() {
 		return
 	}
 	for {
@@ -170,26 +177,26 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		case <-changed:
 		case <-r.Context().Done():
 			return
-		case <-s.shutdown:
+		case <-server.shutdown:
 			return
 		}
-		if !send() {
+		if !sendSnapshot() {
 			return
 		}
-		// Сливаем частые изменения: следующий снимок не раньше чем через 250 мс.
+		// Склеиваем частые изменения. Следующий снимок не раньше чем через 250 мс.
 		select {
 		case <-time.After(250 * time.Millisecond):
 		case <-r.Context().Done():
 			return
-		case <-s.shutdown:
+		case <-server.shutdown:
 			return
 		}
 	}
 }
 
-func (s *Server) search(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
-	writeJSON(w, http.StatusOK, s.lib.Search(q.Get("q"), q.Get("channel")))
+func (server *Server) search(w http.ResponseWriter, r *http.Request) {
+	params := r.URL.Query()
+	writeJSON(w, http.StatusOK, server.lib.Search(params.Get("q"), params.Get("channel")))
 }
 
 type resolveRequest struct {
@@ -207,7 +214,7 @@ type resolveResponse struct {
 	Channels    []candidate `json:"channels"`
 }
 
-func (s *Server) resolve(w http.ResponseWriter, r *http.Request) {
+func (server *Server) resolve(w http.ResponseWriter, r *http.Request) {
 	var req resolveRequest
 	if !readJSON(w, r, &req) {
 		return
@@ -221,15 +228,15 @@ func (s *Server) resolve(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, resolveResponse{NeedsSearch: true, Channels: []candidate{}})
 		return
 	}
-	chs, err := s.yt.Resolve(r.Context(), req.Query)
+	channels, err := server.dataAPI.Resolve(r.Context(), req.Query)
 	if err != nil {
 		writeYouTubeError(w, err)
 		return
 	}
-	resp := resolveResponse{Channels: make([]candidate, 0, len(chs))}
-	for _, ch := range chs {
-		_, in := s.lib.Summary(ch.ID)
-		resp.Channels = append(resp.Channels, candidate{Channel: ch, InLibrary: in})
+	resp := resolveResponse{Channels: make([]candidate, 0, len(channels))}
+	for _, channel := range channels {
+		_, inLibrary := server.lib.Summary(channel.ID)
+		resp.Channels = append(resp.Channels, candidate{Channel: channel, InLibrary: inLibrary})
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -239,60 +246,60 @@ type addRequest struct {
 	Limit int    `json:"limit"`
 }
 
-func (s *Server) add(w http.ResponseWriter, r *http.Request) {
+func (server *Server) add(w http.ResponseWriter, r *http.Request) {
 	var req addRequest
 	if !readJSON(w, r, &req) {
 		return
 	}
 	limit := req.Limit
 	if limit <= 0 {
-		limit = s.defaultLimit
+		limit = server.defaultLimit
 	}
 	limit = min(limit, MaxLimit)
-	ch, err := s.yt.Channel(r.Context(), req.ID)
+	channel, err := server.dataAPI.Channel(r.Context(), req.ID)
 	if err != nil {
 		writeYouTubeError(w, err)
 		return
 	}
-	if err := s.lib.Put(ch, limit); err != nil {
+	if err := server.lib.Put(channel, limit); err != nil {
 		writeError(w, http.StatusInternalServerError, "storage", err.Error())
 		return
 	}
-	s.ix.Enqueue(ch.ID, limit, false)
-	writeJSON(w, http.StatusOK, s.snapshot())
+	server.indexing.Enqueue(channel.ID, limit, false)
+	writeJSON(w, http.StatusOK, server.snapshot())
 }
 
 type refreshRequest struct {
 	Force bool `json:"force"` // снять предохранитель и пробовать сразу
 }
 
-func (s *Server) refresh(w http.ResponseWriter, r *http.Request) {
+func (server *Server) refresh(w http.ResponseWriter, r *http.Request) {
 	var req refreshRequest
 	if !readJSON(w, r, &req) {
 		return
 	}
-	sum, ok := s.lib.Summary(r.PathValue("id"))
+	summary, ok := server.lib.Summary(r.PathValue("id"))
 	if !ok {
 		writeError(w, http.StatusNotFound, "not_found", library.ErrNoChannel.Error())
 		return
 	}
-	s.ix.Enqueue(sum.ID, sum.Limit, req.Force)
-	writeJSON(w, http.StatusOK, s.snapshot())
+	server.indexing.Enqueue(summary.ID, summary.Limit, req.Force)
+	writeJSON(w, http.StatusOK, server.snapshot())
 }
 
-func (s *Server) cancel(w http.ResponseWriter, r *http.Request) {
+func (server *Server) cancel(w http.ResponseWriter, r *http.Request) {
 	var req struct{}
 	if !readJSON(w, r, &req) {
 		return
 	}
-	s.ix.Cancel(r.PathValue("id"))
-	writeJSON(w, http.StatusOK, s.snapshot())
+	server.indexing.Cancel(r.PathValue("id"))
+	writeJSON(w, http.StatusOK, server.snapshot())
 }
 
-func (s *Server) remove(w http.ResponseWriter, r *http.Request) {
+func (server *Server) remove(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	s.ix.Forget(id)
-	if err := s.lib.Remove(id); err != nil {
+	server.indexing.Forget(id)
+	if err := server.lib.Remove(id); err != nil {
 		if errors.Is(err, library.ErrNoChannel) {
 			writeError(w, http.StatusNotFound, "not_found", err.Error())
 			return
@@ -300,10 +307,10 @@ func (s *Server) remove(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "storage", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, s.snapshot())
+	writeJSON(w, http.StatusOK, server.snapshot())
 }
 
-// apiError — ошибка для интерфейса: код для логики и текст для человека.
+// apiError — ошибка для интерфейса. Code нужен логике, Message читает человек.
 type apiError struct {
 	Code    string `json:"code"`
 	Message string `json:"error"`
@@ -325,22 +332,22 @@ func writeYouTubeError(w http.ResponseWriter, err error) {
 	}
 }
 
-func writeError(w http.ResponseWriter, status int, code, msg string) {
-	writeJSON(w, status, apiError{Code: code, Message: msg})
+func writeError(w http.ResponseWriter, status int, code, message string) {
+	writeJSON(w, status, apiError{Code: code, Message: message})
 }
 
-func writeJSON(w http.ResponseWriter, status int, v any) {
+func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(v); err != nil {
+	if err := json.NewEncoder(w).Encode(value); err != nil {
 		log.Printf("ответ API: %v", err)
 	}
 }
 
-func readJSON(w http.ResponseWriter, r *http.Request, v any) bool {
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16))
-	if err := dec.Decode(v); err != nil {
+func readJSON(w http.ResponseWriter, r *http.Request, target any) bool {
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16))
+	if err := decoder.Decode(target); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_json", "не разобрать запрос: "+err.Error())
 		return false
 	}

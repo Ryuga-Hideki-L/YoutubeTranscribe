@@ -1,11 +1,11 @@
-// «Дословно» — поиск по субтитрам каналов YouTube. Один бинарник: API,
-// фоновая индексация и вшитый интерфейс на Angular.
+// «Дословно» — поиск по субтитрам каналов YouTube. Это один бинарник с API,
+// фоновой индексацией и вшитым интерфейсом на Angular.
 //
 //	./tasks.sh build && ./bin/doslovno
 //
-// Ключ YouTube Data API берётся из YOUTUBE_API_KEY (окружение или файл .env
-// в текущем каталоге). Без ключа поиск по уже скачанному работает, а новые
-// каналы не добавить.
+// Ключ YouTube Data API берётся из YOUTUBE_API_KEY. Переменную можно задать
+// в окружении или в файле .env в текущем каталоге. Без ключа поиск по уже
+// скачанному работает, но новые каналы добавить нельзя.
 package main
 
 import (
@@ -47,8 +47,8 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	// Блокировка — до чтения библиотеки: второй сервер на той же папке
-	// затёр бы файлы каналов первого.
+	// Блокировка берётся до чтения библиотеки. Иначе второй сервер на той же
+	// папке затёр бы файлы каналов первого.
 	unlock, err := library.LockDir(*dataDir)
 	if err != nil {
 		log.Fatal(err)
@@ -59,32 +59,32 @@ func main() {
 		log.Fatalf("библиотека в %s: %v", *dataDir, err)
 	}
 
-	// HTTP-клиент по умолчанию берёт HTTPS_PROXY из окружения — через него
+	// HTTP-клиент по умолчанию берёт HTTPS_PROXY из окружения. Через прокси
 	// можно обойти блокировку адреса YouTube.
-	yt := youtube.New(os.Getenv("YOUTUBE_API_KEY"), nil, "")
+	dataAPI := youtube.New(os.Getenv("YOUTUBE_API_KEY"), nil, "")
 	var fetcher indexer.Fetcher = transcript.New(transcript.Options{ClientVersion: *clientVersion, Langs: splitList(*langs)})
 	if path := ytdlpPath(*ytdlp); path != "" {
 		log.Printf("запасной путь субтитров: %s", path)
 		fetcher = transcript.Fallback{Primary: fetcher, Secondary: &transcript.YtDlp{Path: path, Langs: splitList(*langs)}}
 	}
-	ix := indexer.New(lib, yt, fetcher, indexer.Config{StatePath: filepath.Join(*dataDir, "state.json")})
-	srvAPI := api.New(lib, ix, yt, *limit)
+	indexing := indexer.New(lib, dataAPI, fetcher, indexer.Config{StatePath: filepath.Join(*dataDir, "state.json")})
+	apiServer := api.New(lib, indexing, dataAPI, *limit)
 
 	mux := http.NewServeMux()
-	srvAPI.Register(mux)
+	apiServer.Register(mux)
 	mux.Handle("/", site)
 
-	srv := &http.Server{
+	httpServer := &http.Server{
 		Addr:              *addr,
 		Handler:           api.Guard(mux),
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
-	srv.RegisterOnShutdown(srvAPI.Shutdown)
+	httpServer.RegisterOnShutdown(apiServer.Shutdown)
 
-	// Порт — до запуска индексации: занятый порт должен остановить запуск
-	// раньше, чем рабочий сходит в YouTube.
-	ln, err := net.Listen("tcp", *addr)
+	// Порт занимаем до запуска индексации. Если он занят, запуск должен
+	// остановиться раньше, чем рабочий сходит в YouTube.
+	listener, err := net.Listen("tcp", *addr)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -95,32 +95,32 @@ func main() {
 	workerDone := make(chan struct{})
 	go func() {
 		defer close(workerDone)
-		ix.Run(ctx)
+		indexing.Run(ctx)
 	}()
-	go ix.CheckNetwork(ctx)
-	ix.ResumePending()
+	go indexing.CheckNetwork(ctx)
+	indexing.ResumePending()
 
-	// Serve возвращается сразу после Shutdown, а сам Shutdown ещё
-	// дожидается открытых запросов — main ждёт его по stopped.
+	// Serve возвращается сразу после Shutdown, но сам Shutdown ещё ждёт
+	// открытые запросы. Поэтому main ждёт его по каналу stopped.
 	stopped := make(chan struct{})
 	go func() {
 		defer close(stopped)
 		<-ctx.Done()
-		// Снять перехват сигналов: второй Ctrl+C завершит процесс сразу.
+		// Снимаем перехват сигналов. Второй Ctrl+C завершит процесс сразу.
 		stop()
 		log.Print("останавливаюсь…")
-		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if err := srv.Shutdown(shutdown); err != nil {
+		if err := httpServer.Shutdown(shutdownCtx); err != nil {
 			log.Printf("остановка: %v", err)
 		}
 	}()
 
-	if !yt.HasKey() {
+	if !dataAPI.HasKey() {
 		log.Print("нет YOUTUBE_API_KEY: поиск по скачанному работает, новые каналы не добавить")
 	}
 	log.Printf("Дословно: http://%s (данные в %s)", *addr, *dataDir)
-	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	if err := httpServer.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
 	<-stopped
@@ -140,17 +140,17 @@ func defaultDataDir() string {
 	return "data"
 }
 
-// loadDotEnv дописывает в окружение переменные из файла KEY=VALUE.
-// Уже заданные (непустые) в окружении не перезаписываются.
+// loadDotEnv читает файл со строками KEY=VALUE и добавляет их в окружение.
+// Непустые переменные, уже заданные в окружении, не перезаписываются.
 func loadDotEnv(path string) {
-	f, err := os.Open(path)
+	file, err := os.Open(path)
 	if err != nil {
 		return
 	}
-	defer f.Close()
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
+	defer file.Close()
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
@@ -166,6 +166,8 @@ func loadDotEnv(path string) {
 	}
 }
 
+// ytdlpPath переводит значение флага -ytdlp в путь к программе.
+// Пустая строка означает, что запасной путь выключен.
 func ytdlpPath(flagValue string) string {
 	switch flagValue {
 	case "off", "":
@@ -176,12 +178,13 @@ func ytdlpPath(flagValue string) string {
 	return flagValue
 }
 
-func splitList(s string) []string {
-	var out []string
-	for _, part := range strings.Split(s, ",") {
+// splitList делит строку по запятым и отбрасывает пустые части.
+func splitList(list string) []string {
+	var items []string
+	for _, part := range strings.Split(list, ",") {
 		if part = strings.TrimSpace(part); part != "" {
-			out = append(out, part)
+			items = append(items, part)
 		}
 	}
-	return out
+	return items
 }

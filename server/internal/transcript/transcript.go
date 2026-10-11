@@ -1,14 +1,9 @@
 // Package transcript скачивает субтитры видео YouTube без ключа API.
 //
-// Схема та же, что у python-библиотеки youtube-transcript-api (1.2.x):
-// запрос к внутреннему API плеера (innertube /youtubei/v1/player) от имени
-// клиента Android даёт список дорожек субтитров, а дорожка скачивается по её
-// baseUrl в формате XML <transcript><text start dur>…</text>.
-//
-// Быстрый путь — сразу POST к плееру (две загрузки на видео; ключ innertube
-// плееру Android не обязателен, проверено 11.10.2026). Если YouTube ответил
-// непонятно, берётся страница видео: из неё ключ и cookies (согласие для ЕС),
-// потом тот же POST. Ключ запоминается и дальше отправляется с быстрым путём.
+// Схема та же, что у python-библиотеки youtube-transcript-api 1.2.x.
+// Запрос к плееру innertube (/youtubei/v1/player) от имени клиента Android возвращает список дорожек.
+// Дорожка скачивается по её baseUrl в формате XML <transcript><text start dur>…</text>.
+// Порядок запросов описан у Client.Tracks.
 package transcript
 
 import (
@@ -32,23 +27,23 @@ import (
 
 // Ошибки, по которым индексация решает, что делать с видео.
 var (
-	// ErrBlocked — YouTube требует капчу или отвечает 429: запросы с этого
-	// адреса временно не пускают. Повторять сразу бесполезно.
+	// ErrBlocked — YouTube требует капчу или отвечает 429. С этого адреса
+	// запросы временно не пускают, повторять сразу бесполезно.
 	ErrBlocked = errors.New("YouTube временно блокирует запросы с этого адреса")
 	// ErrNoTranscript — у видео нет ни одной дорожки субтитров.
 	ErrNoTranscript = errors.New("у видео нет субтитров")
 	// ErrUnavailable — видео удалено, скрыто или недоступно в регионе.
 	ErrUnavailable = errors.New("видео недоступно")
-	// ErrAgeRestricted — видео 18+, без входа в аккаунт субтитры не отдаются.
+	// ErrAgeRestricted — видео 18+. Без входа в аккаунт субтитры не отдаются.
 	ErrAgeRestricted = errors.New("видео с возрастным ограничением")
-	// ErrPoToken — дорожка требует PO-токен, без браузера её не скачать.
+	// ErrPoToken — дорожка требует PO-токен. Без браузера её не скачать.
 	ErrPoToken = errors.New("YouTube требует PO-токен для этих субтитров")
-	// ErrNetwork — запрос не дошёл: нет сети, DNS, прокси, таймаут. С самим
-	// видео всё может быть в порядке — его надо повторить позже.
+	// ErrNetwork — запрос не дошёл из-за сети, DNS, прокси или таймаута.
+	// С самим видео всё может быть в порядке, поэтому его надо повторить позже.
 	ErrNetwork = errors.New("нет связи с YouTube")
 )
 
-// Line — одна строка субтитров: начало и длительность в секундах.
+// Line — одна строка субтитров. Start и Dur заданы в секундах.
 type Line struct {
 	Start float64 `json:"s"`
 	Dur   float64 `json:"d"`
@@ -58,7 +53,7 @@ type Line struct {
 // Transcript — скачанные субтитры одного видео.
 type Transcript struct {
 	Lang  string `json:"lang"`
-	Auto  bool   `json:"auto"` // распознанные автоматически (kind=asr)
+	Auto  bool   `json:"auto"` // распознаны автоматически (kind=asr)
 	Lines []Line `json:"lines"`
 }
 
@@ -70,10 +65,10 @@ type Track struct {
 	URL  string
 }
 
-// Client скачивает субтитры. Нулевое значение не годится — нужен New.
+// Client скачивает субтитры. Создавать его надо через New, нулевое значение не работает.
 type Client struct {
-	http          *http.Client
-	base          string // https://www.youtube.com, в тестах — httptest
+	httpClient    *http.Client
+	baseURL       string // https://www.youtube.com, в тестах адрес httptest
 	clientVersion string
 	langs         []string
 
@@ -81,15 +76,15 @@ type Client struct {
 	apiKey string
 }
 
-// Options настраивают клиента; пустые поля — значения по умолчанию.
+// Options настраивают клиента. Пустые поля берутся по умолчанию.
 type Options struct {
 	HTTP *http.Client
-	// BaseURL — адрес YouTube; в тестах подменяется.
+	// BaseURL — адрес YouTube. В тестах его подменяют.
 	BaseURL string
-	// ClientVersion — версия клиента Android, которой представляемся плееру.
+	// ClientVersion — версия клиента Android, под которую мы выдаём себя плееру.
 	ClientVersion string
-	// Langs — желаемые языки ручных субтитров, если у видео нет
-	// автоматической дорожки, по которой видно язык речи.
+	// Langs — желаемые языки ручных субтитров.
+	// Нужны, если у видео нет автоматической дорожки и по ней не видно язык речи.
 	Langs []string
 }
 
@@ -97,33 +92,33 @@ type Options struct {
 const DefaultClientVersion = "20.10.38"
 
 // New создаёт клиента.
-func New(o Options) *Client {
-	c := &Client{
-		http:          o.HTTP,
-		base:          strings.TrimSuffix(o.BaseURL, "/"),
-		clientVersion: o.ClientVersion,
-		langs:         o.Langs,
+func New(options Options) *Client {
+	client := &Client{
+		httpClient:    options.HTTP,
+		baseURL:       strings.TrimSuffix(options.BaseURL, "/"),
+		clientVersion: options.ClientVersion,
+		langs:         options.Langs,
 	}
-	if c.http == nil {
-		c.http = &http.Client{Timeout: 30 * time.Second}
+	if client.httpClient == nil {
+		client.httpClient = &http.Client{Timeout: 30 * time.Second}
 	}
-	if c.base == "" {
-		c.base = "https://www.youtube.com"
+	if client.baseURL == "" {
+		client.baseURL = "https://www.youtube.com"
 	}
-	if c.clientVersion == "" {
-		c.clientVersion = DefaultClientVersion
+	if client.clientVersion == "" {
+		client.clientVersion = DefaultClientVersion
 	}
-	return c
+	return client
 }
 
 // Fetch скачивает субтитры видео на языке речи (см. pickTrack).
-func (c *Client) Fetch(ctx context.Context, videoID string) (*Transcript, error) {
-	tracks, session, err := c.Tracks(ctx, videoID)
+func (client *Client) Fetch(ctx context.Context, videoID string) (*Transcript, error) {
+	tracks, session, err := client.Tracks(ctx, videoID)
 	if err != nil {
 		return nil, err
 	}
-	track := pickTrack(tracks, c.langs)
-	lines, err := c.download(ctx, session, track)
+	track := pickTrack(tracks, client.langs)
+	lines, err := client.download(ctx, session, track)
 	if err != nil {
 		return nil, err
 	}
@@ -133,92 +128,103 @@ func (c *Client) Fetch(ctx context.Context, videoID string) (*Transcript, error)
 	return &Transcript{Lang: track.Lang, Auto: track.Auto, Lines: lines}, nil
 }
 
-// Tracks возвращает дорожки субтитров видео и HTTP-сессию, в которой их
-// надо скачивать (с cookies страницы, если она понадобилась).
-func (c *Client) Tracks(ctx context.Context, videoID string) ([]Track, *http.Client, error) {
-	tracks, err := c.player(ctx, c.http, c.key(), videoID)
+// Tracks возвращает дорожки субтитров видео и HTTP-сессию, в которой их надо скачивать.
+// В сессии лежат cookie страницы видео, если она понадобилась.
+//
+// Сначала сразу спрашиваем плеер: это два запроса на видео.
+// Ключ innertube клиенту Android не нужен, проверено 11.10.2026.
+// Если плеер ответил странно, открываем страницу видео.
+// С неё берём ключ и cookie согласия для ЕС и спрашиваем плеер ещё раз.
+// Ключ запоминается и дальше уходит уже в первом запросе.
+func (client *Client) Tracks(ctx context.Context, videoID string) ([]Track, *http.Client, error) {
+	tracks, err := client.player(ctx, client.httpClient, client.key(), videoID)
 	if err == nil || isFinal(err) {
-		return tracks, c.http, err
+		return tracks, client.httpClient, err
 	}
-	// Без cookies плеер ответил странно или ключ устарел — повторяем
-	// полной схемой через страницу видео.
-
-	session := c.session()
-	key, err := c.watchPage(ctx, session, videoID)
+	// Плеер ответил странно или ключ устарел. Повторяем через страницу видео.
+	session := client.session()
+	key, err := client.watchPage(ctx, session, videoID)
 	if err != nil {
 		return nil, nil, err
 	}
-	c.setKey(key)
-	tracks, err = c.player(ctx, session, key, videoID)
+	client.setKey(key)
+	tracks, err = client.player(ctx, session, key, videoID)
 	return tracks, session, err
 }
 
-// isFinal — ошибка, после которой страница видео ничего не изменит.
+// isFinal проверяет ошибку, после которой страница видео ничего не изменит.
 func isFinal(err error) bool {
 	return errors.Is(err, ErrBlocked) || errors.Is(err, ErrNoTranscript) ||
 		errors.Is(err, ErrUnavailable) || errors.Is(err, ErrAgeRestricted)
 }
 
-func (c *Client) key() string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.apiKey
+func (client *Client) key() string {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	return client.apiKey
 }
 
-func (c *Client) setKey(key string) {
-	c.mu.Lock()
-	c.apiKey = key
-	c.mu.Unlock()
+func (client *Client) setKey(key string) {
+	client.mu.Lock()
+	client.apiKey = key
+	client.mu.Unlock()
 }
 
-// session — HTTP-клиент со своей банкой cookies: у каждого видео свежая,
-// как в youtube-transcript-api, чтобы не таскать за собой «отпечаток».
-func (c *Client) session() *http.Client {
-	jar, _ := cookiejar.New(nil) // ошибки у cookiejar.New без опций не бывает
-	s := *c.http
-	s.Jar = jar
-	return &s
+// session возвращает HTTP-клиент с пустым хранилищем cookie.
+// У каждого видео оно новое, как в youtube-transcript-api.
+// Так за клиентом не тянется «отпечаток».
+func (client *Client) session() *http.Client {
+	jar, _ := cookiejar.New(nil) // без опций cookiejar.New не возвращает ошибку
+	clone := *client.httpClient
+	clone.Jar = jar
+	return &clone
 }
 
 var (
-	reInnertubeKey = regexp.MustCompile(`"INNERTUBE_API_KEY":\s*"([a-zA-Z0-9_-]+)"`)
-	reConsentValue = regexp.MustCompile(`name="v" value="(.*?)"`)
+	innertubeKeyPattern = regexp.MustCompile(`"INNERTUBE_API_KEY":\s*"([a-zA-Z0-9_-]+)"`)
+	consentValuePattern = regexp.MustCompile(`name="v" value="(.*?)"`)
+	consentFormMarker   = []byte(`action="https://consent.youtube.com/s"`)
+	recaptchaMarker     = []byte(`class="g-recaptcha"`)
 )
 
-// watchPage открывает страницу видео (при надобности с согласием на cookies)
-// и достаёт из неё ключ innertube.
-func (c *Client) watchPage(ctx context.Context, session *http.Client, videoID string) (string, error) {
-	page, err := c.get(ctx, session, c.base+"/watch?v="+url.QueryEscape(videoID))
+// maxResponseBodyBytes — больше этого из ответа не читаем.
+const maxResponseBodyBytes = 16 << 20
+
+// watchPage открывает страницу видео и достаёт из неё ключ innertube.
+// Если YouTube просит согласие на cookie, сначала даёт его.
+func (client *Client) watchPage(ctx context.Context, session *http.Client, videoID string) (string, error) {
+	pageURL := client.baseURL + "/watch?v=" + url.QueryEscape(videoID)
+	page, err := client.get(ctx, session, pageURL)
 	if err != nil {
 		return "", err
 	}
-	if bytes.Contains(page, []byte(`action="https://consent.youtube.com/s"`)) {
-		m := reConsentValue.FindSubmatch(page)
-		if m == nil {
+	if bytes.Contains(page, consentFormMarker) {
+		match := consentValuePattern.FindSubmatch(page)
+		if match == nil {
 			return "", errors.New("страница согласия YouTube без значения v")
 		}
-		u, _ := url.Parse(c.base)
-		session.Jar.SetCookies(u, []*http.Cookie{{
-			Name: "CONSENT", Value: "YES+" + string(m[1]), Path: "/",
+		base, _ := url.Parse(client.baseURL)
+		session.Jar.SetCookies(base, []*http.Cookie{{
+			Name: "CONSENT", Value: "YES+" + string(match[1]), Path: "/",
 		}})
-		if page, err = c.get(ctx, session, c.base+"/watch?v="+url.QueryEscape(videoID)); err != nil {
+		if page, err = client.get(ctx, session, pageURL); err != nil {
 			return "", err
 		}
-		if bytes.Contains(page, []byte(`action="https://consent.youtube.com/s"`)) {
+		if bytes.Contains(page, consentFormMarker) {
 			return "", errors.New("YouTube не принял согласие на cookies")
 		}
 	}
-	if bytes.Contains(page, []byte(`class="g-recaptcha"`)) {
+	if bytes.Contains(page, recaptchaMarker) {
 		return "", ErrBlocked
 	}
-	m := reInnertubeKey.FindSubmatch(page)
-	if m == nil {
+	match := innertubeKeyPattern.FindSubmatch(page)
+	if match == nil {
 		return "", errors.New("на странице видео нет ключа innertube")
 	}
-	return string(m[1]), nil
+	return string(match[1]), nil
 }
 
-// Ответ плеера — только нужные поля.
+// playerResponse — ответ плеера, только нужные поля.
 type playerResponse struct {
 	PlayabilityStatus struct {
 		Status string `json:"status"`
@@ -240,143 +246,150 @@ type playerResponse struct {
 	} `json:"captions"`
 }
 
-// Причины из playabilityStatus.reason. В «you’re» — типографский апостроф.
+// Тексты причин из playabilityStatus.reason.
+// В слове «you’re» стоит типографский апостроф.
 const (
 	reasonBot         = "Sign in to confirm you’re not a bot"
 	reasonAge         = "This video may be inappropriate for some users."
 	reasonUnavailable = "This video is unavailable"
 )
 
-func (c *Client) player(ctx context.Context, session *http.Client, key, videoID string) ([]Track, error) {
-	body, _ := json.Marshal(map[string]any{
+// player спрашивает плеер и возвращает дорожки субтитров видео.
+func (client *Client) player(ctx context.Context, session *http.Client, key, videoID string) ([]Track, error) {
+	requestBody, _ := json.Marshal(map[string]any{
 		"context": map[string]any{"client": map[string]string{
-			"clientName": "ANDROID", "clientVersion": c.clientVersion,
+			"clientName": "ANDROID", "clientVersion": client.clientVersion,
 		}},
 		"videoId": videoID,
 	})
-	q := url.Values{"prettyPrint": {"false"}}
+	query := url.Values{"prettyPrint": {"false"}}
 	if key != "" {
-		q.Set("key", key)
+		query.Set("key", key)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		c.base+"/youtubei/v1/player?"+q.Encode(), bytes.NewReader(body))
+		client.baseURL+"/youtubei/v1/player?"+query.Encode(), bytes.NewReader(requestBody))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	raw, err := c.do(session, req)
+	raw, err := client.do(session, req)
 	if err != nil {
 		return nil, err
 	}
-	var resp playerResponse
-	if err := json.Unmarshal(raw, &resp); err != nil {
+	var response playerResponse
+	if err := json.Unmarshal(raw, &response); err != nil {
 		return nil, fmt.Errorf("ответ плеера: %w", err)
 	}
 
-	switch ps := resp.PlayabilityStatus; ps.Status {
+	switch playability := response.PlayabilityStatus; playability.Status {
 	case "OK", "":
 	case "LOGIN_REQUIRED":
-		switch ps.Reason {
+		switch playability.Reason {
 		case reasonBot:
 			return nil, ErrBlocked
 		case reasonAge:
 			return nil, ErrAgeRestricted
 		}
-		return nil, fmt.Errorf("плеер требует вход: %s", ps.Reason)
+		return nil, fmt.Errorf("плеер требует вход: %s", playability.Reason)
 	case "ERROR":
-		if ps.Reason == reasonUnavailable {
+		if playability.Reason == reasonUnavailable {
 			return nil, ErrUnavailable
 		}
-		return nil, fmt.Errorf("%w: %s", ErrUnavailable, ps.Reason)
+		return nil, fmt.Errorf("%w: %s", ErrUnavailable, playability.Reason)
 	default:
-		// UNPLAYABLE, LIVE_STREAM_OFFLINE и прочее: видео есть, но не играет.
-		return nil, fmt.Errorf("%w: %s %s", ErrUnavailable, ps.Status, ps.Reason)
+		// UNPLAYABLE, LIVE_STREAM_OFFLINE и другие статусы. Видео есть, но не играет.
+		return nil, fmt.Errorf("%w: %s %s", ErrUnavailable, playability.Status, playability.Reason)
 	}
 
-	r := resp.Captions.Renderer
-	if r == nil || len(r.CaptionTracks) == 0 {
+	renderer := response.Captions.Renderer
+	if renderer == nil || len(renderer.CaptionTracks) == 0 {
 		return nil, ErrNoTranscript
 	}
-	tracks := make([]Track, 0, len(r.CaptionTracks))
-	for _, t := range r.CaptionTracks {
-		name := t.LanguageCode
-		if len(t.Name.Runs) > 0 {
-			name = t.Name.Runs[0].Text
+	tracks := make([]Track, 0, len(renderer.CaptionTracks))
+	for _, captionTrack := range renderer.CaptionTracks {
+		name := captionTrack.LanguageCode
+		if len(captionTrack.Name.Runs) > 0 {
+			name = captionTrack.Name.Runs[0].Text
 		}
 		tracks = append(tracks, Track{
-			Lang: t.LanguageCode,
+			Lang: captionTrack.LanguageCode,
 			Name: name,
-			Auto: t.Kind == "asr",
-			// srv3 — формат с разметкой по словам; без fmt приходит простой
-			// <transcript><text>.
-			URL: strings.Replace(t.BaseURL, "&fmt=srv3", "", 1),
+			Auto: captionTrack.Kind == "asr",
+			// Формат srv3 размечен по словам. Без параметра fmt приходит
+			// простой <transcript><text>.
+			URL: strings.Replace(captionTrack.BaseURL, "&fmt=srv3", "", 1),
 		})
 	}
 	return tracks, nil
 }
 
-// pickTrack выбирает дорожку на языке речи. Язык речи виден по
-// автоматической дорожке (YouTube распознаёт только исходную речь), а ручные
-// дорожки бывают и переводами. Поэтому: ручная на языке автоматической →
-// сама автоматическая → ручная из langs → первая ручная.
+// pickTrack выбирает дорожку на языке речи.
+// Язык речи виден по автоматической дорожке, потому что YouTube распознаёт только исходную речь.
+// Ручные дорожки бывают и переводами, по ним язык речи не определить.
+// Порядок выбора такой:
+//  1. ручная дорожка на языке автоматической;
+//  2. сама автоматическая;
+//  3. ручная дорожка из langs;
+//  4. первая ручная.
 func pickTrack(tracks []Track, langs []string) Track {
-	var auto *Track
+	var autoTrack *Track
 	for i := range tracks {
 		if tracks[i].Auto {
-			auto = &tracks[i]
+			autoTrack = &tracks[i]
 			break
 		}
 	}
-	if auto != nil {
-		for _, t := range tracks {
-			if !t.Auto && sameLang(t.Lang, auto.Lang) {
-				return t
+	if autoTrack != nil {
+		for _, track := range tracks {
+			if !track.Auto && sameLang(track.Lang, autoTrack.Lang) {
+				return track
 			}
 		}
-		return *auto
+		return *autoTrack
 	}
-	for _, want := range langs {
-		for _, t := range tracks {
-			if sameLang(t.Lang, want) {
-				return t
+	for _, wantLang := range langs {
+		for _, track := range tracks {
+			if sameLang(track.Lang, wantLang) {
+				return track
 			}
 		}
 	}
 	return tracks[0]
 }
 
-// sameLang сравнивает коды без региона: «en» и «en-GB» — один язык.
-func sameLang(a, b string) bool {
-	a, _, _ = strings.Cut(strings.ToLower(a), "-")
-	b, _, _ = strings.Cut(strings.ToLower(b), "-")
-	return a == b
+// sameLang сравнивает коды без региона. «en» и «en-GB» — один язык.
+func sameLang(lang, other string) bool {
+	lang, _, _ = strings.Cut(strings.ToLower(lang), "-")
+	other, _, _ = strings.Cut(strings.ToLower(other), "-")
+	return lang == other
 }
 
-func (c *Client) download(ctx context.Context, session *http.Client, t Track) ([]Line, error) {
-	if needsPoToken(t.URL) {
+func (client *Client) download(ctx context.Context, session *http.Client, track Track) ([]Line, error) {
+	if needsPoToken(track.URL) {
 		return nil, ErrPoToken
 	}
-	raw, err := c.get(ctx, session, t.URL)
+	raw, err := client.get(ctx, session, track.URL)
 	if err != nil {
 		return nil, err
 	}
-	// Пустой ответ 200 — так YouTube отказывает без PO-токена.
+	// Пустой ответ с кодом 200 — так YouTube отказывает без PO-токена.
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return nil, ErrPoToken
 	}
 	return Parse(raw)
 }
 
-// needsPoToken — в адресе дорожки эксперимент xpe или xpv: без PO-токена
-// YouTube отдаст пустой ответ (так же проверяет yt-dlp 2026.08).
-func needsPoToken(raw string) bool {
-	u, err := url.Parse(raw)
+// needsPoToken смотрит, есть ли в адресе дорожки эксперимент xpe или xpv.
+// Тогда без PO-токена YouTube отдаст пустой ответ.
+// Так же проверяет yt-dlp 2026.08.
+func needsPoToken(trackURL string) bool {
+	parsed, err := url.Parse(trackURL)
 	if err != nil {
 		return false
 	}
-	for _, v := range u.Query()["exp"] {
-		for _, e := range strings.Split(v, ",") {
-			if e == "xpe" || e == "xpv" {
+	for _, value := range parsed.Query()["exp"] {
+		for _, experiment := range strings.Split(value, ",") {
+			if experiment == "xpe" || experiment == "xpv" {
 				return true
 			}
 		}
@@ -384,8 +397,9 @@ func needsPoToken(raw string) bool {
 	return false
 }
 
-// Parse разбирает XML дорожки. Текст внутри уже экранирован дважды
-// (&amp;#39;): XML снимает один слой, html.UnescapeString — второй.
+// Parse разбирает XML дорожки.
+// Текст в нём экранирован дважды, например &amp;#39;.
+// XML снимает один слой, html.UnescapeString второй.
 func Parse(raw []byte) ([]Line, error) {
 	var doc struct {
 		Texts []struct {
@@ -398,48 +412,50 @@ func Parse(raw []byte) ([]Line, error) {
 		return nil, fmt.Errorf("XML субтитров: %w", err)
 	}
 	lines := make([]Line, 0, len(doc.Texts))
-	for _, t := range doc.Texts {
-		text := cleanText(t.Text)
+	for _, node := range doc.Texts {
+		text := cleanText(node.Text)
 		if text == "" {
 			continue
 		}
-		start, _ := strconv.ParseFloat(t.Start, 64)
-		dur, _ := strconv.ParseFloat(t.Dur, 64)
+		start, _ := strconv.ParseFloat(node.Start, 64)
+		dur, _ := strconv.ParseFloat(node.Dur, 64)
 		lines = append(lines, Line{Start: start, Dur: dur, Text: text})
 	}
 	return lines, nil
 }
 
-var reTag = regexp.MustCompile(`<[^>]*>`)
+var tagPattern = regexp.MustCompile(`<[^>]*>`)
 
-// cleanText снимает экранирование и теги. «>>» — так автоматические
-// субтитры отмечают смену говорящего; в тексте это тире реплики.
-func cleanText(s string) string {
-	s = html.UnescapeString(s)
-	s = reTag.ReplaceAllString(s, "")
-	s = strings.ReplaceAll(s, ">>", "—")
-	return strings.Join(strings.Fields(s), " ")
+// cleanText снимает экранирование и теги.
+// Автоматические субтитры отмечают смену говорящего знаком «>>».
+// В тексте он становится тире реплики.
+func cleanText(text string) string {
+	text = html.UnescapeString(text)
+	text = tagPattern.ReplaceAllString(text, "")
+	text = strings.ReplaceAll(text, ">>", "—")
+	return strings.Join(strings.Fields(text), " ")
 }
 
-func (c *Client) get(ctx context.Context, session *http.Client, u string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+func (client *Client) get(ctx context.Context, session *http.Client, requestURL string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 	if err != nil {
 		return nil, err
 	}
 	// Страница видео без браузерного User-Agent бывает урезанной.
 	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0")
-	return c.do(session, req)
+	return client.do(session, req)
 }
 
-// do выполняет запрос; 429 — блокировка, прочие не-2xx — ошибка с кодом.
-func (c *Client) do(session *http.Client, req *http.Request) ([]byte, error) {
+// do выполняет запрос.
+// Код 429 значит блокировку, другие не-2xx дают ошибку с кодом.
+func (client *Client) do(session *http.Client, req *http.Request) ([]byte, error) {
 	req.Header.Set("Accept-Language", "en-US")
 	resp, err := session.Do(req)
 	if err != nil {
 		return nil, transportError(err)
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodyBytes))
 	if err != nil {
 		return nil, transportError(err)
 	}
@@ -452,8 +468,9 @@ func (c *Client) do(session *http.Client, req *http.Request) ([]byte, error) {
 	return body, nil
 }
 
-// transportError — запрос не дошёл или оборвался. Отмена извне остаётся
-// отменой, остальное (DNS, соединение, таймаут) — ErrNetwork.
+// transportError оборачивает ошибку, когда запрос не дошёл или оборвался.
+// Отмену извне оставляем отменой.
+// Остальное, то есть DNS, соединение и таймаут, становится ErrNetwork.
 func transportError(err error) error {
 	if errors.Is(err, context.Canceled) {
 		return redact(err)
@@ -461,11 +478,12 @@ func transportError(err error) error {
 	return fmt.Errorf("%w: %v", ErrNetwork, redact(err))
 }
 
-// redact убирает адрес запроса из сетевой ошибки: в нём ключ и подписи.
+// redact убирает из адреса в сетевой ошибке всё после «?».
+// Там ключ и подписи.
 func redact(err error) error {
-	var ue *url.Error
-	if errors.As(err, &ue) {
-		return fmt.Errorf("%s %s: %w", ue.Op, strings.SplitN(ue.URL, "?", 2)[0], ue.Err)
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return fmt.Errorf("%s %s: %w", urlErr.Op, strings.SplitN(urlErr.URL, "?", 2)[0], urlErr.Err)
 	}
 	return err
 }

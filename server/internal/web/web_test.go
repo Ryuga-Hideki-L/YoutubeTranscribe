@@ -81,7 +81,7 @@ func TestNotFound(t *testing.T) {
 	for _, target := range []string{"/missing.js", "/.gitkeep", "/icons/", "/icons", "/api", "/../index.html"} {
 		rec := serve(t, site, http.MethodGet, target, nil)
 		if target == "/../index.html" {
-			// path.Clean сводит выход за корень к /index.html — это та же страница, не утечка.
+			// path.Clean сводит выход за корень к /index.html. Это та же страница, утечки нет.
 			if rec.Code != http.StatusOK {
 				t.Errorf("%s: код %d", target, rec.Code)
 			}
@@ -111,11 +111,11 @@ func TestGzipNegotiation(t *testing.T) {
 	if zipped.Header().Get("ETag") == plain.Header().Get("ETag") {
 		t.Error("у сжатого и несжатого варианта одинаковый ETag")
 	}
-	r, err := gzip.NewReader(zipped.Body)
+	reader, err := gzip.NewReader(zipped.Body)
 	if err != nil {
 		t.Fatal(err)
 	}
-	body, _ := io.ReadAll(r)
+	body, _ := io.ReadAll(reader)
 	if !bytes.Equal(body, plain.Body.Bytes()) {
 		t.Error("распакованное тело не совпадает с исходным")
 	}
@@ -167,7 +167,7 @@ func TestLoadWithoutBuild(t *testing.T) {
 func TestEmbeddedBuild(t *testing.T) {
 	site, err := Load(Static(), false)
 	if err == ErrNoBuild {
-		// ./tasks.sh test собирает фронт и ставит CI=1 — там пропуск был бы ложным зелёным.
+		// ./tasks.sh test собирает фронт и ставит CI=1. Там пропуск дал бы ложный зелёный результат.
 		if os.Getenv("CI") != "" {
 			t.Fatal("сборки нет в static/, а тесты запущены как CI — ./tasks.sh test собирает её сам")
 		}

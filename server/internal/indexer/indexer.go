@@ -1,9 +1,9 @@
 // Package indexer скачивает субтитры каналов в фоне.
 //
-// Очередь одна на всё приложение и один рабочий: YouTube блокирует адрес,
-// а не канал, поэтому скачивать два канала разом — только быстрее нарваться
-// на капчу. По той же причине пауза после блокировки (предохранитель) общая
-// и сохраняется на диск: перезапуск не начинает стучаться заново.
+// Очередь одна на всё приложение, рабочий тоже один. YouTube блокирует адрес,
+// а не канал, поэтому два канала разом только быстрее приводят к капче.
+// Пауза после блокировки (предохранитель) тоже общая. Она сохраняется на диск,
+// чтобы перезапуск не начинал стучаться заново.
 package indexer
 
 import (
@@ -72,7 +72,7 @@ type Lister interface {
 	Uploads(ctx context.Context, playlist string, limit int) ([]youtube.Video, error)
 }
 
-// Config — ритм и предохранитель. Нулевые поля — значения по умолчанию.
+// Config — ритм и предохранитель. Нулевое поле означает значение по умолчанию.
 type Config struct {
 	Delay       time.Duration // пауза между видео (1 с)
 	Jitter      time.Duration // плюс случайно до (1 с)
@@ -84,54 +84,54 @@ type Config struct {
 	MaxNetFails int           // сетевых сбоев подряд до остановки (5)
 	StatePath   string        // файл предохранителя
 	Now         func() time.Time
-	Sleep       func(ctx context.Context, d time.Duration) error
-	After       func(d time.Duration) <-chan time.Time
+	Sleep       func(ctx context.Context, duration time.Duration) error
+	After       func(duration time.Duration) <-chan time.Time
 }
 
-func (c *Config) defaults() {
-	if c.Delay == 0 {
-		c.Delay = time.Second
+func (cfg *Config) defaults() {
+	if cfg.Delay == 0 {
+		cfg.Delay = time.Second
 	}
-	if c.Jitter == 0 {
-		c.Jitter = time.Second
+	if cfg.Jitter == 0 {
+		cfg.Jitter = time.Second
 	}
-	if c.Cooldown == 0 {
-		c.Cooldown = time.Minute
+	if cfg.Cooldown == 0 {
+		cfg.Cooldown = time.Minute
 	}
-	if c.MaxBlocks == 0 {
-		c.MaxBlocks = 3
+	if cfg.MaxBlocks == 0 {
+		cfg.MaxBlocks = 3
 	}
-	if c.BlockPause == 0 {
-		c.BlockPause = 30 * time.Minute
+	if cfg.BlockPause == 0 {
+		cfg.BlockPause = 30 * time.Minute
 	}
-	if c.FlushEvery == 0 {
-		c.FlushEvery = 10
+	if cfg.FlushEvery == 0 {
+		cfg.FlushEvery = 10
 	}
-	if c.NetPause == 0 {
-		c.NetPause = 10 * time.Second
+	if cfg.NetPause == 0 {
+		cfg.NetPause = 10 * time.Second
 	}
-	if c.MaxNetFails == 0 {
-		c.MaxNetFails = 5
+	if cfg.MaxNetFails == 0 {
+		cfg.MaxNetFails = 5
 	}
-	if c.Now == nil {
-		c.Now = time.Now
+	if cfg.Now == nil {
+		cfg.Now = time.Now
 	}
-	if c.Sleep == nil {
-		c.Sleep = sleep
+	if cfg.Sleep == nil {
+		cfg.Sleep = sleep
 	}
-	if c.After == nil {
-		c.After = time.After
+	if cfg.After == nil {
+		cfg.After = time.After
 	}
 }
 
-func sleep(ctx context.Context, d time.Duration) error {
-	if d <= 0 {
+func sleep(ctx context.Context, duration time.Duration) error {
+	if duration <= 0 {
 		return ctx.Err()
 	}
-	t := time.NewTimer(d)
-	defer t.Stop()
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
 	select {
-	case <-t.C:
+	case <-timer.C:
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
@@ -147,98 +147,98 @@ type breaker struct {
 
 // Indexer — очередь и рабочий.
 type Indexer struct {
-	lib *library.Library
-	yt  Lister
-	tr  Fetcher
-	cfg Config
+	lib     *library.Library
+	lister  Lister
+	fetcher Fetcher
+	cfg     Config
 
-	mu      sync.Mutex
-	jobs    map[string]*Job
-	queue   []string
-	limits  map[string]int
-	running string
-	cancel  context.CancelFunc
-	br      breaker
-	subs    map[chan struct{}]struct{}
-	wake    chan struct{}
+	mu          sync.Mutex
+	jobs        map[string]*Job
+	queue       []string
+	limits      map[string]int
+	running     string
+	cancel      context.CancelFunc
+	breaker     breaker
+	subscribers map[chan struct{}]struct{}
+	wake        chan struct{}
 
 	restricted   bool                           // DNS сети включает Restricted Mode
 	checkNetwork func(ctx context.Context) bool // по умолчанию transcript.RestrictedMode
 }
 
 // New создаёт индексатор и читает предохранитель с диска.
-func New(lib *library.Library, yt Lister, tr Fetcher, cfg Config) *Indexer {
+func New(lib *library.Library, lister Lister, fetcher Fetcher, cfg Config) *Indexer {
 	cfg.defaults()
-	ix := &Indexer{
-		lib: lib, yt: yt, tr: tr, cfg: cfg,
-		jobs:   map[string]*Job{},
-		limits: map[string]int{},
-		subs:   map[chan struct{}]struct{}{},
-		wake:   make(chan struct{}, 1),
-		br:     breaker{Version: 1},
+	indexer := &Indexer{
+		lib: lib, lister: lister, fetcher: fetcher, cfg: cfg,
+		jobs:        map[string]*Job{},
+		limits:      map[string]int{},
+		subscribers: map[chan struct{}]struct{}{},
+		wake:        make(chan struct{}, 1),
+		breaker:     breaker{Version: 1},
 		checkNetwork: func(ctx context.Context) bool {
 			return transcript.RestrictedMode(ctx, nil)
 		},
 	}
 	if cfg.StatePath != "" {
 		if raw, err := os.ReadFile(cfg.StatePath); err == nil {
-			if err := json.Unmarshal(raw, &ix.br); err != nil {
+			if err := json.Unmarshal(raw, &indexer.breaker); err != nil {
 				log.Printf("предохранитель %s не читается: %v", filepath.Base(cfg.StatePath), err)
-				ix.br = breaker{Version: 1}
+				indexer.breaker = breaker{Version: 1}
 			}
 		}
 	}
-	return ix
+	return indexer
 }
 
-// Run — рабочий: берёт задания из очереди по одному, пока жив ctx.
-func (ix *Indexer) Run(ctx context.Context) {
+// Run берёт задания из очереди по одному, пока жив ctx.
+func (indexer *Indexer) Run(ctx context.Context) {
 	for {
-		id, jobCtx, ok := ix.next(ctx)
+		id, jobCtx, ok := indexer.next(ctx)
 		if !ok {
 			return
 		}
-		ix.run(jobCtx, id)
-		ix.mu.Lock()
-		ix.cancel()
-		ix.running, ix.cancel = "", nil
-		ix.mu.Unlock()
-		ix.notify()
+		indexer.run(jobCtx, id)
+		indexer.mu.Lock()
+		indexer.cancel()
+		indexer.running, indexer.cancel = "", nil
+		indexer.mu.Unlock()
+		indexer.notify()
 	}
 }
 
-// next ждёт задание; ok=false — ctx закрыт.
-func (ix *Indexer) next(ctx context.Context) (string, context.Context, bool) {
+// next ждёт задание. Если ok равно false, ctx закрыт.
+func (indexer *Indexer) next(ctx context.Context) (string, context.Context, bool) {
 	for {
-		ix.mu.Lock()
-		if len(ix.queue) > 0 {
-			id := ix.queue[0]
-			ix.queue = ix.queue[1:]
+		indexer.mu.Lock()
+		if len(indexer.queue) > 0 {
+			id := indexer.queue[0]
+			indexer.queue = indexer.queue[1:]
 			jobCtx, cancel := context.WithCancel(ctx)
-			ix.running, ix.cancel = id, cancel
-			ix.mu.Unlock()
+			indexer.running, indexer.cancel = id, cancel
+			indexer.mu.Unlock()
 			return id, jobCtx, true
 		}
-		// Задания, остановленные блокировкой, встают в очередь сами, когда
-		// кончится пауза. Таймер — только пока такие есть.
+		// Задания, остановленные блокировкой, сами встают в очередь, когда
+		// кончится пауза. Таймер нужен, только пока такие задания есть.
 		var retry <-chan time.Time
-		if ix.hasBlockedLocked() {
-			retry = ix.cfg.After(ix.br.BlockedUntil.Sub(ix.cfg.Now()))
+		if indexer.hasBlockedLocked() {
+			retry = indexer.cfg.After(indexer.breaker.BlockedUntil.Sub(indexer.cfg.Now()))
 		}
-		ix.mu.Unlock()
+		indexer.mu.Unlock()
 		select {
-		case <-ix.wake:
+		case <-indexer.wake:
 		case <-retry:
-			ix.requeueBlocked()
+			indexer.requeueBlocked()
 		case <-ctx.Done():
 			return "", nil, false
 		}
 	}
 }
 
-func (ix *Indexer) hasBlockedLocked() bool {
-	for _, j := range ix.jobs {
-		if j.State == StateBlocked {
+func (indexer *Indexer) hasBlockedLocked() bool {
+	for _, job := range indexer.jobs {
+		if job.State == StateBlocked {
 			return true
 		}
 	}
@@ -246,243 +246,246 @@ func (ix *Indexer) hasBlockedLocked() bool {
 }
 
 // requeueBlocked ставит в очередь задания, остановленные блокировкой.
-func (ix *Indexer) requeueBlocked() {
-	ix.mu.Lock()
+func (indexer *Indexer) requeueBlocked() {
+	indexer.mu.Lock()
 	var ids []string
-	for id, j := range ix.jobs {
-		if j.State == StateBlocked {
+	for id, job := range indexer.jobs {
+		if job.State == StateBlocked {
 			ids = append(ids, id)
 		}
 	}
 	slices.Sort(ids)
 	for _, id := range ids {
-		ix.queue = append(ix.queue, id)
-		ix.jobs[id].State = StateQueued
+		indexer.queue = append(indexer.queue, id)
+		indexer.jobs[id].State = StateQueued
 	}
-	ix.mu.Unlock()
+	indexer.mu.Unlock()
 	if len(ids) > 0 {
 		log.Printf("пауза после блокировки кончилась — снова в очереди: %v", ids)
-		ix.notify()
+		indexer.notify()
 	}
 }
 
-// Enqueue ставит канал в очередь с пределом видео limit. Уже стоящий или
-// идущий канал второй раз не ставится. force снимает предохранитель:
-// человек сам решил попробовать снова.
-func (ix *Indexer) Enqueue(id string, limit int, force bool) {
-	ix.mu.Lock()
+// Enqueue ставит канал в очередь с пределом видео limit. Канал, который уже
+// стоит в очереди или идёт, второй раз не ставится. force снимает
+// предохранитель, потому что человек сам решил попробовать снова.
+func (indexer *Indexer) Enqueue(id string, limit int, force bool) {
+	indexer.mu.Lock()
 	if force {
-		ix.br.BlockedUntil, ix.br.Blocks = time.Time{}, 0
-		ix.saveBreakerLocked()
+		indexer.breaker.BlockedUntil, indexer.breaker.Blocks = time.Time{}, 0
+		indexer.saveBreakerLocked()
 	}
-	ix.limits[id] = limit
-	if ix.running == id || slices.Contains(ix.queue, id) {
-		ix.mu.Unlock()
+	indexer.limits[id] = limit
+	if indexer.running == id || slices.Contains(indexer.queue, id) {
+		indexer.mu.Unlock()
 		return
 	}
-	ix.queue = append(ix.queue, id)
-	ix.jobs[id] = &Job{ChannelID: id, State: StateQueued}
-	ix.mu.Unlock()
+	indexer.queue = append(indexer.queue, id)
+	indexer.jobs[id] = &Job{ChannelID: id, State: StateQueued}
+	indexer.mu.Unlock()
 	select {
-	case ix.wake <- struct{}{}:
+	case indexer.wake <- struct{}{}:
 	default:
 	}
-	ix.notify()
+	indexer.notify()
 }
 
 // Cancel снимает канал с очереди или останавливает идущее задание.
-func (ix *Indexer) Cancel(id string) {
-	ix.mu.Lock()
-	if i := slices.Index(ix.queue, id); i >= 0 {
-		ix.queue = slices.Delete(ix.queue, i, i+1)
-		ix.jobs[id].State = StateCancelled
+func (indexer *Indexer) Cancel(id string) {
+	indexer.mu.Lock()
+	if i := slices.Index(indexer.queue, id); i >= 0 {
+		indexer.queue = slices.Delete(indexer.queue, i, i+1)
+		indexer.jobs[id].State = StateCancelled
 	}
 	// Остановленное блокировкой не встанет в очередь само.
-	if j, ok := ix.jobs[id]; ok && j.State == StateBlocked {
-		j.State = StateCancelled
+	if job, ok := indexer.jobs[id]; ok && job.State == StateBlocked {
+		job.State = StateCancelled
 	}
-	if ix.running == id {
-		ix.cancel()
+	if indexer.running == id {
+		indexer.cancel()
 	}
-	ix.mu.Unlock()
-	ix.notify()
+	indexer.mu.Unlock()
+	indexer.notify()
 }
 
 // Forget убирает задание удалённого канала из списка.
-func (ix *Indexer) Forget(id string) {
-	ix.Cancel(id)
-	ix.mu.Lock()
-	delete(ix.jobs, id)
-	delete(ix.limits, id)
-	ix.mu.Unlock()
-	ix.notify()
+func (indexer *Indexer) Forget(id string) {
+	indexer.Cancel(id)
+	indexer.mu.Lock()
+	delete(indexer.jobs, id)
+	delete(indexer.limits, id)
+	indexer.mu.Unlock()
+	indexer.notify()
 }
 
 // Jobs — копии заданий по каналам.
-func (ix *Indexer) Jobs() map[string]Job {
-	ix.mu.Lock()
-	defer ix.mu.Unlock()
-	out := make(map[string]Job, len(ix.jobs))
-	for id, j := range ix.jobs {
-		out[id] = *j
+func (indexer *Indexer) Jobs() map[string]Job {
+	indexer.mu.Lock()
+	defer indexer.mu.Unlock()
+	out := make(map[string]Job, len(indexer.jobs))
+	for id, job := range indexer.jobs {
+		out[id] = *job
 	}
 	return out
 }
 
 // BlockedUntil — до какого времени действует предохранитель.
-func (ix *Indexer) BlockedUntil() time.Time {
-	ix.mu.Lock()
-	defer ix.mu.Unlock()
-	if ix.br.BlockedUntil.After(ix.cfg.Now()) {
-		return ix.br.BlockedUntil
+func (indexer *Indexer) BlockedUntil() time.Time {
+	indexer.mu.Lock()
+	defer indexer.mu.Unlock()
+	if indexer.breaker.BlockedUntil.After(indexer.cfg.Now()) {
+		return indexer.breaker.BlockedUntil
 	}
 	return time.Time{}
 }
 
-// Restricted — DNS сети подменяет YouTube на Restricted Mode (по последней проверке).
-func (ix *Indexer) Restricted() bool {
-	ix.mu.Lock()
-	defer ix.mu.Unlock()
-	return ix.restricted
+// Restricted говорит, включает ли DNS сети Restricted Mode YouTube.
+// Ответ берётся из последней проверки.
+func (indexer *Indexer) Restricted() bool {
+	indexer.mu.Lock()
+	defer indexer.mu.Unlock()
+	return indexer.restricted
 }
 
-// CheckNetwork перепроверяет DNS: при запуске и перед каждым заданием —
-// сеть могла смениться.
-func (ix *Indexer) CheckNetwork(ctx context.Context) {
+// CheckNetwork перепроверяет DNS при запуске и перед каждым заданием.
+// Сеть могла смениться.
+func (indexer *Indexer) CheckNetwork(ctx context.Context) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	restricted := ix.checkNetwork(ctx)
-	ix.mu.Lock()
-	changed := ix.restricted != restricted
-	ix.restricted = restricted
-	ix.mu.Unlock()
+	restricted := indexer.checkNetwork(ctx)
+	indexer.mu.Lock()
+	changed := indexer.restricted != restricted
+	indexer.restricted = restricted
+	indexer.mu.Unlock()
 	if changed {
 		if restricted {
 			log.Print("DNS сети включает Restricted Mode YouTube: часть видео будет недоступна")
 		}
-		ix.notify()
+		indexer.notify()
 	}
 }
 
-// Subscribe — сигнал «что-то поменялось». Канал с буфером 1: частые
-// изменения сливаются, подписчик берёт свежий снимок сам.
-func (ix *Indexer) Subscribe() (<-chan struct{}, func()) {
-	ch := make(chan struct{}, 1)
-	ix.mu.Lock()
-	ix.subs[ch] = struct{}{}
-	ix.mu.Unlock()
-	return ch, func() {
-		ix.mu.Lock()
-		delete(ix.subs, ch)
-		ix.mu.Unlock()
+// Subscribe отдаёт сигнал «что-то поменялось». Буфер канала равен 1, поэтому
+// частые изменения сливаются в один сигнал. Свежий снимок подписчик берёт сам.
+func (indexer *Indexer) Subscribe() (<-chan struct{}, func()) {
+	signal := make(chan struct{}, 1)
+	indexer.mu.Lock()
+	indexer.subscribers[signal] = struct{}{}
+	indexer.mu.Unlock()
+	return signal, func() {
+		indexer.mu.Lock()
+		delete(indexer.subscribers, signal)
+		indexer.mu.Unlock()
 	}
 }
 
-func (ix *Indexer) notify() {
-	ix.mu.Lock()
-	defer ix.mu.Unlock()
-	for ch := range ix.subs {
+func (indexer *Indexer) notify() {
+	indexer.mu.Lock()
+	defer indexer.mu.Unlock()
+	for signal := range indexer.subscribers {
 		select {
-		case ch <- struct{}{}:
+		case signal <- struct{}{}:
 		default:
 		}
 	}
 }
 
-// update меняет задание под замком и оповещает подписчиков. Задания
-// нет — канал удалили (Forget): заводить его заново нельзя, иначе в
-// списке остался бы призрак удалённого канала.
-func (ix *Indexer) update(id string, f func(j *Job)) {
-	ix.mu.Lock()
-	j, ok := ix.jobs[id]
+// update меняет задание под замком и оповещает подписчиков. Если задания нет,
+// канал уже удалили через Forget. Заводить задание заново нельзя, иначе в
+// списке останется призрак удалённого канала.
+func (indexer *Indexer) update(id string, change func(job *Job)) {
+	indexer.mu.Lock()
+	job, ok := indexer.jobs[id]
 	if ok {
-		f(j)
+		change(job)
 	}
-	ix.mu.Unlock()
+	indexer.mu.Unlock()
 	if ok {
-		ix.notify()
+		indexer.notify()
 	}
 }
 
-func (ix *Indexer) saveBreakerLocked() {
-	if ix.cfg.StatePath == "" {
+func (indexer *Indexer) saveBreakerLocked() {
+	if indexer.cfg.StatePath == "" {
 		return
 	}
-	raw, _ := json.Marshal(ix.br)
-	if err := library.WriteAtomic(ix.cfg.StatePath, raw); err != nil {
+	raw, _ := json.Marshal(indexer.breaker)
+	if err := library.WriteAtomic(indexer.cfg.StatePath, raw); err != nil {
 		log.Printf("предохранитель не записан: %v", err)
 	}
 }
 
-// finish заканчивает задание; reason — причина для интерфейса (ReasonNetwork
-// у остановки без сети), обычно пустая.
-func (ix *Indexer) finish(id string, state State, errText string, reason ...string) {
-	if err := ix.lib.Flush(); err != nil {
+// finish заканчивает задание. Необязательный reason — причина для интерфейса,
+// например ReasonNetwork при остановке без сети.
+func (indexer *Indexer) finish(id string, state State, errText string, reason ...string) {
+	if err := indexer.lib.Flush(); err != nil {
 		log.Printf("запись библиотеки: %v", err)
 	}
-	ix.update(id, func(j *Job) {
-		j.State, j.Error, j.Current = state, errText, ""
-		j.CooldownUntil, j.Reason = time.Time{}, ""
+	indexer.update(id, func(job *Job) {
+		job.State, job.Error, job.Current = state, errText, ""
+		job.CooldownUntil, job.Reason = time.Time{}, ""
 		if len(reason) > 0 {
-			j.Reason = reason[0]
+			job.Reason = reason[0]
 		}
-		j.FinishedAt = ix.cfg.Now()
+		job.FinishedAt = indexer.cfg.Now()
 	})
 }
 
-func (ix *Indexer) run(ctx context.Context, id string) {
-	ix.mu.Lock()
-	limit := ix.limits[id]
-	ix.mu.Unlock()
-	ix.update(id, func(j *Job) {
-		*j = Job{ChannelID: id, State: StateListing, StartedAt: ix.cfg.Now()}
+func (indexer *Indexer) run(ctx context.Context, id string) {
+	indexer.mu.Lock()
+	limit := indexer.limits[id]
+	indexer.mu.Unlock()
+	indexer.update(id, func(job *Job) {
+		*job = Job{ChannelID: id, State: StateListing, StartedAt: indexer.cfg.Now()}
 	})
-	ix.CheckNetwork(ctx)
+	indexer.CheckNetwork(ctx)
 
-	if err := ix.list(ctx, id, limit); err != nil {
+	if err := indexer.list(ctx, id, limit); err != nil {
 		if ctx.Err() != nil || errors.Is(err, library.ErrNoChannel) {
 			// Отменили или канал удалили, пока шёл запрос к API.
-			ix.finish(id, StateCancelled, "")
+			indexer.finish(id, StateCancelled, "")
 			return
 		}
-		// Без списка можно доделать то, что уже известно (нет ключа, квота).
-		if len(ix.lib.Todo(id)) == 0 {
-			ix.finish(id, StateFailed, err.Error())
+		// Без свежего списка можно доделать уже известные видео. Так бывает,
+		// когда нет ключа или кончилась квота.
+		if len(indexer.lib.Todo(id)) == 0 {
+			indexer.finish(id, StateFailed, err.Error())
 			return
 		}
 		log.Printf("список видео канала %s не обновлён: %v", id, err)
 	}
 
-	todo := ix.lib.Todo(id)
-	ix.update(id, func(j *Job) { j.State, j.Total = StateRunning, len(todo) })
+	todo := indexer.lib.Todo(id)
+	indexer.update(id, func(job *Job) { job.State, job.Total = StateRunning, len(todo) })
 
 	netFails := 0 // сетевых сбоев подряд
 	for i := 0; i < len(todo); {
-		v := todo[i]
-		if err := ix.waitBreaker(ctx, id); err != nil {
-			ix.finish(id, StateCancelled, "")
+		video := todo[i]
+		if err := indexer.waitBreaker(ctx, id); err != nil {
+			indexer.finish(id, StateCancelled, "")
 			return
 		}
-		ix.update(id, func(j *Job) { j.Current = v.Title })
+		indexer.update(id, func(job *Job) { job.Current = video.Title })
 
 		fetchCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
-		t, err := ix.tr.Fetch(fetchCtx, v.ID)
+		fetched, err := indexer.fetcher.Fetch(fetchCtx, video.ID)
 		cancel()
 		if ctx.Err() != nil {
-			ix.finish(id, StateCancelled, "")
+			indexer.finish(id, StateCancelled, "")
 			return
 		}
-		// Нет сети — с видео всё может быть в порядке: статус не пишем,
-		// ждём с растущей паузой и повторяем то же видео. После MaxNetFails
-		// подряд задание останавливается, видео остаются не скачанными.
+		// Нет сети. С видео при этом всё может быть в порядке, поэтому статус
+		// не пишем. Ждём с растущей паузой и повторяем то же видео. После
+		// MaxNetFails сбоев подряд задание останавливается, а видео остаются
+		// не скачанными.
 		if errors.Is(err, transcript.ErrNetwork) {
 			netFails++
-			if netFails >= ix.cfg.MaxNetFails {
-				ix.finish(id, StateFailed, err.Error(), ReasonNetwork)
+			if netFails >= indexer.cfg.MaxNetFails {
+				indexer.finish(id, StateFailed, err.Error(), ReasonNetwork)
 				return
 			}
-			if err := ix.pause(ctx, id, ReasonNetwork, ix.cfg.NetPause<<(netFails-1)); err != nil {
-				ix.finish(id, StateCancelled, "")
+			if err := indexer.pause(ctx, id, ReasonNetwork, indexer.cfg.NetPause<<(netFails-1)); err != nil {
+				indexer.finish(id, StateCancelled, "")
 				return
 			}
 			continue
@@ -494,106 +497,106 @@ func (ix *Indexer) run(ctx context.Context, id string) {
 		if err != nil {
 			errText = err.Error()
 		}
-		ix.lib.SetResult(id, v.ID, status, t, errText)
+		indexer.lib.SetResult(id, video.ID, status, fetched, errText)
 
 		if status == library.StatusBlocked {
-			stop, until := ix.blocked()
-			log.Printf("блокировка на %s (%s), пауза до %s", v.ID, errText, until.Format(time.TimeOnly))
+			stop, until := indexer.blocked()
+			log.Printf("блокировка на %s (%s), пауза до %s", video.ID, errText, until.Format(time.TimeOnly))
 			if stop {
-				ix.finish(id, StateBlocked, errText)
+				indexer.finish(id, StateBlocked, errText)
 				return
 			}
 			continue // то же видео после паузы
 		}
-		ix.unblocked()
+		indexer.unblocked()
 
-		ix.update(id, func(j *Job) {
-			j.Done++
+		indexer.update(id, func(job *Job) {
+			job.Done++
 			switch status {
 			case library.StatusOK:
-				j.OK++
+				job.OK++
 			case library.StatusNoCaptions, library.StatusAge:
-				j.NoCaptions++
+				job.NoCaptions++
 			default:
-				j.Failed++
+				job.Failed++
 			}
 		})
 		i++
-		if i%ix.cfg.FlushEvery == 0 {
-			if err := ix.lib.Flush(); err != nil {
+		if i%indexer.cfg.FlushEvery == 0 {
+			if err := indexer.lib.Flush(); err != nil {
 				log.Printf("запись библиотеки: %v", err)
 			}
 		}
 		if i < len(todo) {
-			pause := ix.cfg.Delay + rand.N(ix.cfg.Jitter+1)
-			if err := ix.cfg.Sleep(ctx, pause); err != nil {
-				ix.finish(id, StateCancelled, "")
+			pause := indexer.cfg.Delay + rand.N(indexer.cfg.Jitter+1)
+			if err := indexer.cfg.Sleep(ctx, pause); err != nil {
+				indexer.finish(id, StateCancelled, "")
 				return
 			}
 		}
 	}
-	ix.lib.MarkIndexed(id)
-	ix.finish(id, StateDone, "")
+	indexer.lib.MarkIndexed(id)
+	indexer.finish(id, StateDone, "")
 }
 
 // list обновляет данные канала и список его видео.
-func (ix *Indexer) list(ctx context.Context, id string, limit int) error {
-	ch, err := ix.yt.Channel(ctx, id)
+func (indexer *Indexer) list(ctx context.Context, id string, limit int) error {
+	channel, err := indexer.lister.Channel(ctx, id)
 	if err != nil {
 		return err
 	}
-	if err := ix.lib.Update(ch, limit); err != nil {
+	if err := indexer.lib.Update(channel, limit); err != nil {
 		return err
 	}
-	videos, err := ix.yt.Uploads(ctx, ch.Uploads, limit)
+	videos, err := indexer.lister.Uploads(ctx, channel.Uploads, limit)
 	if err != nil {
 		return err
 	}
-	return ix.lib.Merge(id, videos)
+	return indexer.lib.Merge(id, videos)
 }
 
 // waitBreaker ждёт конца общей паузы после блокировки.
-func (ix *Indexer) waitBreaker(ctx context.Context, id string) error {
-	until := ix.BlockedUntil()
+func (indexer *Indexer) waitBreaker(ctx context.Context, id string) error {
+	until := indexer.BlockedUntil()
 	if until.IsZero() {
 		return nil
 	}
-	return ix.pause(ctx, id, ReasonBlocked, until.Sub(ix.cfg.Now()))
+	return indexer.pause(ctx, id, ReasonBlocked, until.Sub(indexer.cfg.Now()))
 }
 
 // pause — пауза задания с причиной и обратным отсчётом в интерфейсе.
-func (ix *Indexer) pause(ctx context.Context, id, reason string, d time.Duration) error {
-	until := ix.cfg.Now().Add(d)
-	ix.update(id, func(j *Job) { j.State, j.Reason, j.CooldownUntil = StateCooling, reason, until })
-	if err := ix.cfg.Sleep(ctx, d); err != nil {
+func (indexer *Indexer) pause(ctx context.Context, id, reason string, duration time.Duration) error {
+	until := indexer.cfg.Now().Add(duration)
+	indexer.update(id, func(job *Job) { job.State, job.Reason, job.CooldownUntil = StateCooling, reason, until })
+	if err := indexer.cfg.Sleep(ctx, duration); err != nil {
 		return err
 	}
-	ix.update(id, func(j *Job) { j.State, j.Reason, j.CooldownUntil = StateRunning, "", time.Time{} })
+	indexer.update(id, func(job *Job) { job.State, job.Reason, job.CooldownUntil = StateRunning, "", time.Time{} })
 	return nil
 }
 
-// blocked отмечает блокировку: пауза растёт вдвое, после MaxBlocks подряд —
-// остановка задания и долгая пауза.
-func (ix *Indexer) blocked() (stop bool, until time.Time) {
-	ix.mu.Lock()
-	defer ix.mu.Unlock()
-	ix.br.Blocks++
-	pause := ix.cfg.Cooldown << (ix.br.Blocks - 1)
-	stop = ix.br.Blocks >= ix.cfg.MaxBlocks
+// blocked отмечает блокировку. Пауза растёт вдвое. После MaxBlocks блокировок
+// подряд задание останавливается и наступает долгая пауза.
+func (indexer *Indexer) blocked() (stop bool, until time.Time) {
+	indexer.mu.Lock()
+	defer indexer.mu.Unlock()
+	indexer.breaker.Blocks++
+	pause := indexer.cfg.Cooldown << (indexer.breaker.Blocks - 1)
+	stop = indexer.breaker.Blocks >= indexer.cfg.MaxBlocks
 	if stop {
-		pause = ix.cfg.BlockPause
+		pause = indexer.cfg.BlockPause
 	}
-	ix.br.BlockedUntil = ix.cfg.Now().Add(pause)
-	ix.saveBreakerLocked()
-	return stop, ix.br.BlockedUntil
+	indexer.breaker.BlockedUntil = indexer.cfg.Now().Add(pause)
+	indexer.saveBreakerLocked()
+	return stop, indexer.breaker.BlockedUntil
 }
 
-func (ix *Indexer) unblocked() {
-	ix.mu.Lock()
-	defer ix.mu.Unlock()
-	if ix.br.Blocks != 0 || !ix.br.BlockedUntil.IsZero() {
-		ix.br.Blocks, ix.br.BlockedUntil = 0, time.Time{}
-		ix.saveBreakerLocked()
+func (indexer *Indexer) unblocked() {
+	indexer.mu.Lock()
+	defer indexer.mu.Unlock()
+	if indexer.breaker.Blocks != 0 || !indexer.breaker.BlockedUntil.IsZero() {
+		indexer.breaker.Blocks, indexer.breaker.BlockedUntil = 0, time.Time{}
+		indexer.saveBreakerLocked()
 	}
 }
 
@@ -616,12 +619,12 @@ func classify(err error) library.Status {
 }
 
 // ResumePending ставит в очередь каналы, индексацию которых прервал
-// перезапуск: остались ни разу не скачанные видео или канал добавлен, но
-// ещё ни разу не проиндексирован (список видео не получен).
-func (ix *Indexer) ResumePending() {
-	for _, s := range ix.lib.Summaries() {
-		if s.Counts.Pending > 0 || s.IndexedAt.IsZero() {
-			ix.Enqueue(s.ID, s.Limit, false)
+// перезапуск. Это каналы с ещё не скачанными видео и каналы, которые добавили,
+// но ни разу не проиндексировали: список их видео не получен.
+func (indexer *Indexer) ResumePending() {
+	for _, summary := range indexer.lib.Summaries() {
+		if summary.Counts.Pending > 0 || summary.IndexedAt.IsZero() {
+			indexer.Enqueue(summary.ID, summary.Limit, false)
 		}
 	}
 }

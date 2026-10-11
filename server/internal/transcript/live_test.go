@@ -1,7 +1,7 @@
 //go:build live
 
-// Живая проверка на настоящем YouTube: go test -tags live ./internal/transcript/
-// В обычный прогон и CI не входит — зависит от сети и настроения YouTube.
+// Живая проверка на настоящем YouTube. Запуск: go test -tags live ./internal/transcript/
+// В обычный прогон и CI она не входит, потому что зависит от сети и настроения YouTube.
 package transcript
 
 import (
@@ -11,34 +11,35 @@ import (
 	"testing"
 )
 
-type countingTransport struct{ n atomic.Int32 }
+// countingTransport считает запросы, прошедшие через него.
+type countingTransport struct{ count atomic.Int32 }
 
-func (c *countingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
-	c.n.Add(1)
-	return http.DefaultTransport.RoundTrip(r)
+func (transport *countingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	transport.count.Add(1)
+	return http.DefaultTransport.RoundTrip(req)
 }
 
 func TestLive(t *testing.T) {
 	cases := []struct {
-		id, lang string
-		auto     bool
+		videoID, lang string
+		auto          bool
 	}{
 		{"dQw4w9WgXcQ", "en", false}, // ручные субтитры и ещё 5 языков
 		{"jNQXAC9IVRw", "en", false}, // первое видео YouTube
 	}
-	for _, c := range cases {
-		rt := &countingTransport{}
-		cl := New(Options{HTTP: &http.Client{Transport: rt}})
-		tr, err := cl.Fetch(context.Background(), c.id)
+	for _, tc := range cases {
+		transport := &countingTransport{}
+		client := New(Options{HTTP: &http.Client{Transport: transport}})
+		result, err := client.Fetch(context.Background(), tc.videoID)
 		if err != nil {
-			t.Fatalf("%s: %v", c.id, err)
+			t.Fatalf("%s: %v", tc.videoID, err)
 		}
-		t.Logf("%s: %s auto=%v, %d строк, запросов %d; первая: %q", c.id, tr.Lang, tr.Auto, len(tr.Lines), rt.n.Load(), tr.Lines[0].Text)
-		if tr.Lang != c.lang || len(tr.Lines) < 3 {
-			t.Errorf("%s: язык %s, строк %d", c.id, tr.Lang, len(tr.Lines))
+		t.Logf("%s: %s auto=%v, %d строк, запросов %d, первая: %q", tc.videoID, result.Lang, result.Auto, len(result.Lines), transport.count.Load(), result.Lines[0].Text)
+		if result.Lang != tc.lang || len(result.Lines) < 3 {
+			t.Errorf("%s: язык %s, строк %d", tc.videoID, result.Lang, len(result.Lines))
 		}
-		if rt.n.Load() != 2 {
-			t.Errorf("%s: %d запросов, ожидалось 2", c.id, rt.n.Load())
+		if transport.count.Load() != 2 {
+			t.Errorf("%s: %d запросов, ожидалось 2", tc.videoID, transport.count.Load())
 		}
 	}
 }
@@ -52,13 +53,13 @@ func TestLiveYtDlp(t *testing.T) {
 	if path == "" {
 		t.Skip("yt-dlp нет в PATH")
 	}
-	// Как в приложении: -langs ru,en по умолчанию (language у этого видео пуст).
-	tr, err := (&YtDlp{Path: path, Langs: []string{"ru", "en"}}).Fetch(context.Background(), "jNQXAC9IVRw")
+	// Как в приложении, где -langs по умолчанию ru,en. У этого видео поле language пустое.
+	result, err := (&YtDlp{Path: path, Langs: []string{"ru", "en"}}).Fetch(context.Background(), "jNQXAC9IVRw")
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("yt-dlp: %s auto=%v, %d строк; первая: %q", tr.Lang, tr.Auto, len(tr.Lines), tr.Lines[0].Text)
-	if tr.Lang != "en" {
-		t.Errorf("язык %s, want en", tr.Lang)
+	t.Logf("yt-dlp: %s auto=%v, %d строк, первая: %q", result.Lang, result.Auto, len(result.Lines), result.Lines[0].Text)
+	if result.Lang != "en" {
+		t.Errorf("язык %s, want en", result.Lang)
 	}
 }

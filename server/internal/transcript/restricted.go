@@ -8,29 +8,29 @@ import (
 )
 
 // RestrictedMode проверяет, не подменяет ли DNS сети www.youtube.com на
-// restrict.youtube.com или restrictmoderate.youtube.com. Так включают
-// «Безопасный режим» YouTube публичные Wi-Fi и родительские фильтры.
-// Субтитры обычных видео он не прячет, но часть видео становится
-// недоступной, и индексация помечает их unavailable.
-func RestrictedMode(ctx context.Context, r *net.Resolver) bool {
-	if r == nil {
-		r = net.DefaultResolver
+// restrict.youtube.com или restrictmoderate.youtube.com.
+// Так включают «Безопасный режим» YouTube публичные Wi-Fi и родительские фильтры.
+// Субтитры обычных видео он не прячет.
+// Но часть видео становится недоступной, и индексация помечает их unavailable.
+func RestrictedMode(ctx context.Context, resolver *net.Resolver) bool {
+	if resolver == nil {
+		resolver = net.DefaultResolver
 	}
-	if cname, err := r.LookupCNAME(ctx, "www.youtube.com"); err == nil && strings.HasPrefix(cname, "restrict") {
+	if cname, err := resolver.LookupCNAME(ctx, "www.youtube.com"); err == nil && strings.HasPrefix(cname, "restrict") {
 		return true
 	}
-	// CNAME бывает скрыт (подмена прямо адресом) — сверяем адреса.
-	www, err := r.LookupHost(ctx, "www.youtube.com")
+	// CNAME бывает скрыт, когда DNS подменяет сразу адрес. Поэтому сверяем адреса.
+	wwwAddrs, err := resolver.LookupHost(ctx, "www.youtube.com")
 	if err != nil {
 		return false
 	}
 	for _, host := range []string{"restrict.youtube.com", "restrictmoderate.youtube.com"} {
-		addrs, err := r.LookupHost(ctx, host)
+		hostAddrs, err := resolver.LookupHost(ctx, host)
 		if err != nil {
 			continue
 		}
-		for _, a := range addrs {
-			if slices.Contains(www, a) {
+		for _, addr := range hostAddrs {
+			if slices.Contains(wwwAddrs, addr) {
 				return true
 			}
 		}

@@ -12,14 +12,14 @@ import (
 )
 
 // fakeYtDlp пишет в каталог теста скрипт, который ведёт себя как yt-dlp -J.
-func fakeYtDlp(t *testing.T, stdout, stderr string, code int) string {
+func fakeYtDlp(t *testing.T, stdout, stderr string, exitCode int) string {
 	t.Helper()
 	dir := t.TempDir()
-	out := filepath.Join(dir, "out.json")
-	errf := filepath.Join(dir, "err.txt")
-	os.WriteFile(out, []byte(stdout), 0o644)
-	os.WriteFile(errf, []byte(stderr), 0o644)
-	script := fmt.Sprintf("#!/bin/sh\ncat %q\ncat %q >&2\nexit %d\n", out, errf, code)
+	stdoutFile := filepath.Join(dir, "out.json")
+	stderrFile := filepath.Join(dir, "err.txt")
+	os.WriteFile(stdoutFile, []byte(stdout), 0o644)
+	os.WriteFile(stderrFile, []byte(stderr), 0o644)
+	script := fmt.Sprintf("#!/bin/sh\ncat %q\ncat %q >&2\nexit %d\n", stdoutFile, stderrFile, exitCode)
 	path := filepath.Join(dir, "yt-dlp")
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
@@ -37,17 +37,17 @@ func timedtextServer(t *testing.T) *httptest.Server {
 
 func TestYtDlpPicksSpeechTrack(t *testing.T) {
 	srv := timedtextServer(t)
-	// Ручные en и de, автоматические: ru-orig (речь) и машинный перевод en.
+	// Ручные en и de. Автоматические: ru-orig (речь) и машинный перевод en.
 	info := fmt.Sprintf(`{"language":"ru",
 		"subtitles":{"en":[{"ext":"srv1","url":"%[1]s/en"}],"de":[{"ext":"srv1","url":"%[1]s/de"}]},
 		"automatic_captions":{"ru-orig":[{"ext":"json3","url":"x"},{"ext":"srv1","url":"%[1]s/ru"}],"en":[{"ext":"srv1","url":"%[1]s/en-auto"}]}}`, srv.URL)
-	y := &YtDlp{Path: fakeYtDlp(t, info, "", 0)}
-	tr, err := y.Fetch(context.Background(), "abc")
+	ytdlp := &YtDlp{Path: fakeYtDlp(t, info, "", 0)}
+	result, err := ytdlp.Fetch(context.Background(), "abc")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if tr.Lang != "ru" || !tr.Auto || len(tr.Lines) != 3 {
-		t.Fatalf("got %+v", tr)
+	if result.Lang != "ru" || !result.Auto || len(result.Lines) != 3 {
+		t.Fatalf("got %+v", result)
 	}
 }
 
@@ -58,31 +58,32 @@ func TestYtDlpErrors(t *testing.T) {
 		"ERROR: [youtube] abc: Sign in to confirm your age":                         ErrAgeRestricted,
 	}
 	for stderr, want := range cases {
-		y := &YtDlp{Path: fakeYtDlp(t, "", "WARNING: x\n"+stderr+"\n", 1)}
-		if _, err := y.Fetch(context.Background(), "abc"); !errors.Is(err, want) {
+		ytdlp := &YtDlp{Path: fakeYtDlp(t, "", "WARNING: x\n"+stderr+"\n", 1)}
+		if _, err := ytdlp.Fetch(context.Background(), "abc"); !errors.Is(err, want) {
 			t.Errorf("%q: got %v, want %v", stderr, err, want)
 		}
 	}
-	// «webpage» содержит «age», но это не возрастное ограничение.
-	y := &YtDlp{Path: fakeYtDlp(t, "", "ERROR: [youtube] abc: Unable to download webpage\n", 1)}
-	if _, err := y.Fetch(context.Background(), "abc"); err == nil || isFinal(err) {
+	// Слово «webpage» содержит «age», но это не возрастное ограничение.
+	ytdlp := &YtDlp{Path: fakeYtDlp(t, "", "ERROR: [youtube] abc: Unable to download webpage\n", 1)}
+	if _, err := ytdlp.Fetch(context.Background(), "abc"); err == nil || isFinal(err) {
 		t.Errorf("сбой загрузки страницы стал окончательным: %v", err)
 	}
-	y = &YtDlp{Path: fakeYtDlp(t, `{"language":"en","subtitles":{},"automatic_captions":{}}`, "", 0)}
-	if _, err := y.Fetch(context.Background(), "abc"); !errors.Is(err, ErrNoTranscript) {
+	ytdlp = &YtDlp{Path: fakeYtDlp(t, `{"language":"en","subtitles":{},"automatic_captions":{}}`, "", 0)}
+	if _, err := ytdlp.Fetch(context.Background(), "abc"); !errors.Is(err, ErrNoTranscript) {
 		t.Errorf("без дорожек: %v", err)
 	}
 }
 
-type scripted struct {
+// scriptedFetcher при каждом вызове Fetch отдаёт заранее заданную ошибку и считает вызовы.
+type scriptedFetcher struct {
 	err   error
 	calls int
 }
 
-func (s *scripted) Fetch(context.Context, string) (*Transcript, error) {
-	s.calls++
-	if s.err != nil {
-		return nil, s.err
+func (fetcher *scriptedFetcher) Fetch(context.Context, string) (*Transcript, error) {
+	fetcher.calls++
+	if fetcher.err != nil {
+		return nil, fetcher.err
 	}
 	return &Transcript{Lang: "ru"}, nil
 }
@@ -90,7 +91,8 @@ func (s *scripted) Fetch(context.Context, string) (*Transcript, error) {
 func TestFallback(t *testing.T) {
 	cases := []struct {
 		name          string
-		primary, sec  error
+		primaryErr    error
+		secondaryErr  error
 		wantSecondary bool
 		want          error
 	}{
@@ -102,14 +104,15 @@ func TestFallback(t *testing.T) {
 		{"yt-dlp тоже заблокирован — это блокировка", ErrPoToken, ErrBlocked, true, ErrBlocked},
 		{"yt-dlp не смог — остаётся исходная ошибка", ErrPoToken, errors.New("boom"), true, ErrPoToken},
 	}
-	for _, c := range cases {
-		p, s := &scripted{err: c.primary}, &scripted{err: c.sec}
-		_, err := Fallback{Primary: p, Secondary: s}.Fetch(context.Background(), "abc")
-		if (s.calls > 0) != c.wantSecondary {
-			t.Errorf("%s: запасной вызван %d раз", c.name, s.calls)
+	for _, tc := range cases {
+		primary := &scriptedFetcher{err: tc.primaryErr}
+		secondary := &scriptedFetcher{err: tc.secondaryErr}
+		_, err := Fallback{Primary: primary, Secondary: secondary}.Fetch(context.Background(), "abc")
+		if (secondary.calls > 0) != tc.wantSecondary {
+			t.Errorf("%s: запасной вызван %d раз", tc.name, secondary.calls)
 		}
-		if c.want == nil && err != nil || c.want != nil && !errors.Is(err, c.want) {
-			t.Errorf("%s: got %v, want %v", c.name, err, c.want)
+		if tc.want == nil && err != nil || tc.want != nil && !errors.Is(err, tc.want) {
+			t.Errorf("%s: got %v, want %v", tc.name, err, tc.want)
 		}
 	}
 }
@@ -117,11 +120,11 @@ func TestFallback(t *testing.T) {
 func TestYtDlpManualOnlyUsesLanguageField(t *testing.T) {
 	srv := timedtextServer(t)
 	info := fmt.Sprintf(`{"language":"en","subtitles":{"de":[{"ext":"srv1","url":"%[1]s/de"}],"en":[{"ext":"srv1","url":"%[1]s/en"}]},"automatic_captions":{}}`, srv.URL)
-	tr, err := (&YtDlp{Path: fakeYtDlp(t, info, "", 0), Langs: []string{"ru"}}).Fetch(context.Background(), "abc")
+	result, err := (&YtDlp{Path: fakeYtDlp(t, info, "", 0), Langs: []string{"ru"}}).Fetch(context.Background(), "abc")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if tr.Lang != "en" || tr.Auto {
-		t.Fatalf("got %s auto=%v, want en", tr.Lang, tr.Auto)
+	if result.Lang != "en" || result.Auto {
+		t.Fatalf("got %s auto=%v, want en", result.Lang, result.Auto)
 	}
 }

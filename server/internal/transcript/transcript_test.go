@@ -53,9 +53,9 @@ func TestPickTrack(t *testing.T) {
 		{"регион не мешает", []Track{en, de}, []string{"de"}, de},
 		{"иначе первая", []Track{de, en}, []string{"fr"}, de},
 	}
-	for _, c := range cases {
-		if got := pickTrack(c.tracks, c.langs); got != c.want {
-			t.Errorf("%s: got %+v, want %+v", c.name, got, c.want)
+	for _, tc := range cases {
+		if got := pickTrack(tc.tracks, tc.langs); got != tc.want {
+			t.Errorf("%s: got %+v, want %+v", tc.name, got, tc.want)
 		}
 	}
 }
@@ -64,30 +64,30 @@ func TestPickTrack(t *testing.T) {
 type fakeYouTube struct {
 	watchHits  atomic.Int32
 	playerHits atomic.Int32
-	watchPage  func(r *http.Request) string // по умолчанию — страница с ключом
+	watchPage  func(r *http.Request) string // по умолчанию страница с ключом
 	player     func() any                   // ответ плеера
-	status     int                          // если не 0 — код ответа плеера
+	status     int                          // если не 0, то код ответа плеера
 	needKey    bool                         // без ключа плеер отвечает LOGIN_REQUIRED
 	emptyText  bool                         // timedtext отдаёт пустой 200
 }
 
-func (f *fakeYouTube) server(t *testing.T) *httptest.Server {
+func (fake *fakeYouTube) server(t *testing.T) *httptest.Server {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/watch":
-			f.watchHits.Add(1)
+			fake.watchHits.Add(1)
 			page := `<script>ytcfg.set({"INNERTUBE_API_KEY": "KEY123"})</script>`
-			if f.watchPage != nil {
-				page = f.watchPage(r)
+			if fake.watchPage != nil {
+				page = fake.watchPage(r)
 			}
 			fmt.Fprint(w, page)
 		case "/youtubei/v1/player":
-			f.playerHits.Add(1)
+			fake.playerHits.Add(1)
 			if key := r.URL.Query().Get("key"); key != "" && key != "KEY123" {
 				http.Error(w, "bad key", http.StatusBadRequest)
 				return
 			}
-			if f.needKey && r.URL.Query().Get("key") == "" {
+			if fake.needKey && r.URL.Query().Get("key") == "" {
 				_ = json.NewEncoder(w).Encode(map[string]any{"playabilityStatus": map[string]any{"status": "LOGIN_REQUIRED", "reason": "Please sign in"}})
 				return
 			}
@@ -101,13 +101,13 @@ func (f *fakeYouTube) server(t *testing.T) *httptest.Server {
 				http.Error(w, "bad body", http.StatusBadRequest)
 				return
 			}
-			if f.status != 0 {
-				w.WriteHeader(f.status)
+			if fake.status != 0 {
+				w.WriteHeader(fake.status)
 				return
 			}
-			_ = json.NewEncoder(w).Encode(f.player())
+			_ = json.NewEncoder(w).Encode(fake.player())
 		case "/api/timedtext":
-			if !f.emptyText {
+			if !fake.emptyText {
 				fmt.Fprint(w, timedtext)
 			}
 		default:
@@ -120,8 +120,8 @@ func (f *fakeYouTube) server(t *testing.T) *httptest.Server {
 
 func okPlayer(base string, tracks ...map[string]any) func() any {
 	return func() any {
-		for _, tr := range tracks {
-			tr["baseUrl"] = base + "/api/timedtext?v=x&lang=" + tr["languageCode"].(string) + "&fmt=srv3"
+		for _, captionTrack := range tracks {
+			captionTrack["baseUrl"] = base + "/api/timedtext?v=x&lang=" + captionTrack["languageCode"].(string) + "&fmt=srv3"
 		}
 		return map[string]any{
 			"playabilityStatus": map[string]any{"status": "OK"},
@@ -132,116 +132,116 @@ func okPlayer(base string, tracks ...map[string]any) func() any {
 	}
 }
 
-func track(lang, kind string) map[string]any {
+// playerWithExperiment отвечает как okPlayer, но к адресу дорожки добавляет exp=<experiment>.
+func playerWithExperiment(base, experiment string) func() any {
+	return func() any {
+		player := okPlayer(base, playerTrack("en", "asr"))().(map[string]any)
+		tracks := player["captions"].(map[string]any)["playerCaptionsTracklistRenderer"].(map[string]any)["captionTracks"].([]map[string]any)
+		tracks[0]["baseUrl"] = tracks[0]["baseUrl"].(string) + "&exp=" + experiment
+		return player
+	}
+}
+
+func playerTrack(lang, kind string) map[string]any {
 	return map[string]any{"languageCode": lang, "kind": kind, "name": map[string]any{"runs": []any{map[string]any{"text": lang}}}}
 }
 
 func TestFetchFastPath(t *testing.T) {
-	f := &fakeYouTube{}
-	srv := f.server(t)
-	f.player = okPlayer(srv.URL, track("en", "asr"))
-	c := New(Options{BaseURL: srv.URL})
+	fake := &fakeYouTube{}
+	srv := fake.server(t)
+	fake.player = okPlayer(srv.URL, playerTrack("en", "asr"))
+	client := New(Options{BaseURL: srv.URL})
 
-	tr, err := c.Fetch(context.Background(), "abc")
+	result, err := client.Fetch(context.Background(), "abc")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if tr.Lang != "en" || !tr.Auto || len(tr.Lines) != 3 {
-		t.Fatalf("неожиданные субтитры: %+v", tr)
+	if result.Lang != "en" || !result.Auto || len(result.Lines) != 3 {
+		t.Fatalf("неожиданные субтитры: %+v", result)
 	}
-	if f.watchHits.Load() != 0 || f.playerHits.Load() != 1 {
-		t.Errorf("страница %d, плеер %d; ожидалось 0 и 1 (два запроса на видео)", f.watchHits.Load(), f.playerHits.Load())
+	if fake.watchHits.Load() != 0 || fake.playerHits.Load() != 1 {
+		t.Errorf("страница %d, плеер %d, ожидалось 0 и 1 (два запроса на видео)", fake.watchHits.Load(), fake.playerHits.Load())
 	}
 }
 
 func TestFetchFallsBackToWatchPageAndKeepsKey(t *testing.T) {
-	f := &fakeYouTube{needKey: true}
-	srv := f.server(t)
-	f.player = okPlayer(srv.URL, track("en", "asr"))
-	c := New(Options{BaseURL: srv.URL})
+	fake := &fakeYouTube{needKey: true}
+	srv := fake.server(t)
+	fake.player = okPlayer(srv.URL, playerTrack("en", "asr"))
+	client := New(Options{BaseURL: srv.URL})
 
 	for range 3 {
-		if _, err := c.Fetch(context.Background(), "abc"); err != nil {
+		if _, err := client.Fetch(context.Background(), "abc"); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if got := f.watchHits.Load(); got != 1 {
-		t.Errorf("страница видео загружена %d раз, ожидалась 1 (дальше — известный ключ)", got)
+	if got := fake.watchHits.Load(); got != 1 {
+		t.Errorf("страница видео загружена %d раз, ожидалась 1, дальше ключ уже известен", got)
 	}
 }
 
 func TestConsentPage(t *testing.T) {
-	f := &fakeYouTube{needKey: true}
-	f.watchPage = func(r *http.Request) string {
-		if c, err := r.Cookie("CONSENT"); err == nil && c.Value == "YES+cb.20260101" {
+	fake := &fakeYouTube{needKey: true}
+	fake.watchPage = func(r *http.Request) string {
+		if cookie, err := r.Cookie("CONSENT"); err == nil && cookie.Value == "YES+cb.20260101" {
 			return `"INNERTUBE_API_KEY":"KEY123"`
 		}
 		return `<form action="https://consent.youtube.com/s"><input name="v" value="cb.20260101"></form>`
 	}
-	srv := f.server(t)
-	f.player = okPlayer(srv.URL, track("en", ""))
+	srv := fake.server(t)
+	fake.player = okPlayer(srv.URL, playerTrack("en", ""))
 
 	if _, err := New(Options{BaseURL: srv.URL}).Fetch(context.Background(), "abc"); err != nil {
 		t.Fatal(err)
 	}
-	if f.watchHits.Load() != 2 {
-		t.Errorf("страница загружена %d раз, ожидалось 2 (до и после согласия)", f.watchHits.Load())
+	if fake.watchHits.Load() != 2 {
+		t.Errorf("страница загружена %d раз, ожидалось 2: до и после согласия", fake.watchHits.Load())
 	}
 }
 
 func TestErrors(t *testing.T) {
 	cases := []struct {
 		name  string
-		setup func(f *fakeYouTube, base string)
+		setup func(fake *fakeYouTube, base string)
 		want  error
 	}{
-		{"капча на странице", func(f *fakeYouTube, _ string) {
-			f.needKey = true
-			f.watchPage = func(*http.Request) string { return `<div class="g-recaptcha"></div>` }
+		{"капча на странице", func(fake *fakeYouTube, _ string) {
+			fake.needKey = true
+			fake.watchPage = func(*http.Request) string { return `<div class="g-recaptcha"></div>` }
 		}, ErrBlocked},
-		{"429 от плеера", func(f *fakeYouTube, _ string) { f.status = http.StatusTooManyRequests }, ErrBlocked},
-		{"плеер просит доказать, что не бот", func(f *fakeYouTube, _ string) {
-			f.player = func() any {
+		{"429 от плеера", func(fake *fakeYouTube, _ string) { fake.status = http.StatusTooManyRequests }, ErrBlocked},
+		{"плеер просит доказать, что не бот", func(fake *fakeYouTube, _ string) {
+			fake.player = func() any {
 				return map[string]any{"playabilityStatus": map[string]any{"status": "LOGIN_REQUIRED", "reason": reasonBot}}
 			}
 		}, ErrBlocked},
-		{"возрастное ограничение", func(f *fakeYouTube, _ string) {
-			f.player = func() any {
+		{"возрастное ограничение", func(fake *fakeYouTube, _ string) {
+			fake.player = func() any {
 				return map[string]any{"playabilityStatus": map[string]any{"status": "LOGIN_REQUIRED", "reason": reasonAge}}
 			}
 		}, ErrAgeRestricted},
-		{"видео недоступно", func(f *fakeYouTube, _ string) {
-			f.player = func() any {
+		{"видео недоступно", func(fake *fakeYouTube, _ string) {
+			fake.player = func() any {
 				return map[string]any{"playabilityStatus": map[string]any{"status": "ERROR", "reason": reasonUnavailable}}
 			}
 		}, ErrUnavailable},
-		{"нет дорожек", func(f *fakeYouTube, _ string) {
-			f.player = func() any { return map[string]any{"playabilityStatus": map[string]any{"status": "OK"}} }
+		{"нет дорожек", func(fake *fakeYouTube, _ string) {
+			fake.player = func() any { return map[string]any{"playabilityStatus": map[string]any{"status": "OK"}} }
 		}, ErrNoTranscript},
-		{"нужен PO-токен", func(f *fakeYouTube, base string) {
-			f.player = func() any {
-				p := okPlayer(base, track("en", "asr"))().(map[string]any)
-				tr := p["captions"].(map[string]any)["playerCaptionsTracklistRenderer"].(map[string]any)["captionTracks"].([]map[string]any)
-				tr[0]["baseUrl"] = tr[0]["baseUrl"].(string) + "&exp=xpe"
-				return p
-			}
+		{"нужен PO-токен", func(fake *fakeYouTube, base string) {
+			fake.player = playerWithExperiment(base, "xpe")
 		}, ErrPoToken},
-		{"xpv в списке экспериментов", func(f *fakeYouTube, base string) {
-			f.player = func() any {
-				p := okPlayer(base, track("en", "asr"))().(map[string]any)
-				tr := p["captions"].(map[string]any)["playerCaptionsTracklistRenderer"].(map[string]any)["captionTracks"].([]map[string]any)
-				tr[0]["baseUrl"] = tr[0]["baseUrl"].(string) + "&exp=abc,xpv"
-				return p
-			}
+		{"xpv в списке экспериментов", func(fake *fakeYouTube, base string) {
+			fake.player = playerWithExperiment(base, "abc,xpv")
 		}, ErrPoToken},
-		{"пустой ответ дорожки", func(f *fakeYouTube, _ string) { f.emptyText = true }, ErrPoToken},
+		{"пустой ответ дорожки", func(fake *fakeYouTube, _ string) { fake.emptyText = true }, ErrPoToken},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			f := &fakeYouTube{}
-			srv := f.server(t)
-			f.player = okPlayer(srv.URL, track("en", "asr"))
-			tc.setup(f, srv.URL)
+			fake := &fakeYouTube{}
+			srv := fake.server(t)
+			fake.player = okPlayer(srv.URL, playerTrack("en", "asr"))
+			tc.setup(fake, srv.URL)
 			_, err := New(Options{BaseURL: srv.URL}).Fetch(context.Background(), "abc")
 			if !errors.Is(err, tc.want) {
 				t.Fatalf("got %v, want %v", err, tc.want)
@@ -251,9 +251,9 @@ func TestErrors(t *testing.T) {
 }
 
 func TestRedactHidesQuery(t *testing.T) {
-	c := New(Options{BaseURL: "http://127.0.0.1:1"}) // никто не слушает
-	c.setKey("SECRET")
-	_, err := c.Fetch(context.Background(), "abc")
+	client := New(Options{BaseURL: "http://127.0.0.1:1"}) // никто не слушает
+	client.setKey("SECRET")
+	_, err := client.Fetch(context.Background(), "abc")
 	if err == nil || strings.Contains(err.Error(), "SECRET") {
 		t.Fatalf("ключ попал в текст ошибки: %v", err)
 	}
@@ -263,7 +263,7 @@ func TestRedactHidesQuery(t *testing.T) {
 	// Отмена извне — не «нет сети».
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := c.Fetch(ctx, "abc"); errors.Is(err, ErrNetwork) || !errors.Is(err, context.Canceled) {
+	if _, err := client.Fetch(ctx, "abc"); errors.Is(err, ErrNetwork) || !errors.Is(err, context.Canceled) {
 		t.Errorf("отмена: %v", err)
 	}
 }

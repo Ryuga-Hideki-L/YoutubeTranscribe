@@ -8,31 +8,32 @@ import (
 	"unicode/utf8"
 )
 
-// Пределы ответа: сколько видео и совпадений в видео отдаётся за раз.
+// Сколько отдаём за один поиск.
 const (
 	MaxVideos       = 60
 	MaxHitsPerVideo = 50
-	MaxHitLines     = 6 // строк в одном совпадении вместе с контекстом
+	MaxHitLines     = 6 // строк в одном совпадении вместе с соседними
 )
 
-// Mark — подсвеченный кусок строки: [от, до) в символах (кодовых точках).
+// Mark — подсвеченный кусок строки. Начало и конец считаются в символах.
 type Mark [2]int
 
-// HitLine — строка субтитров в совпадении: с подсветкой или контекст.
+// HitLine — строка субтитров в совпадении. Строка с фразой несёт подсветку,
+// соседние строки идут без неё.
 type HitLine struct {
-	S     float64 `json:"s"`
-	T     string  `json:"t"`
+	Start float64 `json:"s"`
+	Text  string  `json:"t"`
 	Marks []Mark  `json:"m,omitempty"`
 }
 
-// Hit — одно совпадение: строки с фразой и по строке до и после.
+// Hit — одно совпадение: строки с фразой и по строке до и после них.
 type Hit struct {
-	S     float64   `json:"s"` // начало первой строки с фразой
+	Start float64   `json:"s"` // когда начинается первая строка с фразой
 	Lines []HitLine `json:"lines"`
-	from  int       // номер строки Lines[0] в субтитрах видео
+	first int       // номер первой строки совпадения в субтитрах видео
 }
 
-// VideoHits — совпадения в одном видео.
+// VideoHits — все совпадения в одном видео.
 type VideoHits struct {
 	ID           string    `json:"id"`
 	Title        string    `json:"title"`
@@ -40,8 +41,8 @@ type VideoHits struct {
 	Duration     int       `json:"duration,omitempty"`
 	ChannelID    string    `json:"channelId"`
 	ChannelTitle string    `json:"channelTitle"`
-	Total        int       `json:"total"` // всего совпадений в видео
-	Hits         []Hit     `json:"hits"`  // не больше MaxHitsPerVideo
+	Total        int       `json:"total"` // сколько совпадений нашлось
+	Hits         []Hit     `json:"hits"`  // отдаём не больше MaxHitsPerVideo
 }
 
 // Result — ответ поиска.
@@ -52,191 +53,200 @@ type Result struct {
 	Videos      []VideoHits `json:"videos"` // не больше MaxVideos
 }
 
-// videoIndex — видео, подготовленное к поиску: все строки одной строкой в
-// нижнем регистре через пробел и начала строк в ней (в байтах). Так фраза
-// находится, даже если субтитры разорвали её между строками.
-type videoIndex struct {
-	v         *Video
-	channelID string
-	norm      string
-	offsets   []int
+// searchEntry — видео, готовое к поиску. Все его строки склеены в один
+// текст через пробел, поэтому находится и фраза, разорванная между строками.
+type searchEntry struct {
+	video      *Video
+	channelID  string
+	text       string // строки в нижнем регистре, ё заменена на е
+	lineStarts []int  // где в text начинается каждая строка, в байтах
 }
 
-type index struct {
-	videos        []*videoIndex
+// searchSnapshot — всё, по чему ищем. Его не меняют, а заменяют целиком,
+// поэтому поиск читает его без замка.
+type searchSnapshot struct {
+	entries       []*searchEntry
 	channelTitles map[string]string
 }
 
-// normalize приводит текст к виду для поиска, не меняя число символов:
-// нижний регистр и «ё» как «е». Поэтому позиции в символах у исходной
-// строки и у нормализованной совпадают.
-func normalize(s string) string {
-	var b strings.Builder
-	b.Grow(len(s))
-	for _, r := range s {
-		r = unicode.ToLower(r)
-		if r == 'ё' {
-			r = 'е'
+// normalize переводит текст в нижний регистр и меняет ё на е. Число символов
+// не меняется, поэтому позиции подсветки подходят и к исходной строке.
+func normalize(text string) string {
+	var out strings.Builder
+	out.Grow(len(text))
+	for _, char := range text {
+		char = unicode.ToLower(char)
+		if char == 'ё' {
+			char = 'е'
 		}
-		b.WriteRune(r)
+		out.WriteRune(char)
 	}
-	return b.String()
+	return out.String()
 }
 
-func buildVideoIndex(channelID string, v *Video) *videoIndex {
-	vi := &videoIndex{v: v, channelID: channelID, offsets: make([]int, len(v.Lines))}
-	var b strings.Builder
-	for i, line := range v.Lines {
+func newSearchEntry(channelID string, video *Video) *searchEntry {
+	entry := &searchEntry{video: video, channelID: channelID, lineStarts: make([]int, len(video.Lines))}
+	var text strings.Builder
+	for i, line := range video.Lines {
 		if i > 0 {
-			b.WriteByte(' ')
+			text.WriteByte(' ')
 		}
-		vi.offsets[i] = b.Len()
-		b.WriteString(normalize(line.Text))
+		entry.lineStarts[i] = text.Len()
+		text.WriteString(normalize(line.Text))
 	}
-	vi.norm = b.String()
-	return vi
+	entry.text = text.String()
+	return entry
 }
 
-func (l *Library) reindex() {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.reindexLocked()
+func (lib *Library) reindex() {
+	lib.mu.Lock()
+	defer lib.mu.Unlock()
+	lib.reindexLocked()
 }
 
-// reindexLocked собирает новый снимок для поиска. Записи видео не меняются
-// после создания (SetResult и Merge заменяют их копиями), поэтому готовые
-// videoIndex берутся из кэша по указателю на запись.
-func (l *Library) reindexLocked() {
-	idx := &index{channelTitles: map[string]string{}}
-	cache := make(map[*Video]*videoIndex, len(l.cache))
-	for id, ch := range l.channels {
-		idx.channelTitles[id] = ch.Channel.Title
-		for _, v := range ch.Videos {
-			if v.Status != StatusOK || len(v.Lines) == 0 {
+// reindexLocked собирает новый снимок для поиска. Готовые записи берутся из
+// кэша: запись видео после создания не меняется, её только заменяют копией.
+func (lib *Library) reindexLocked() {
+	snapshot := &searchSnapshot{channelTitles: map[string]string{}}
+	entries := make(map[*Video]*searchEntry, len(lib.entries))
+	for id, channel := range lib.channels {
+		snapshot.channelTitles[id] = channel.Channel.Title
+		for _, video := range channel.Videos {
+			if video.Status != StatusOK || len(video.Lines) == 0 {
 				continue
 			}
-			vi, ok := l.cache[v]
+			entry, ok := lib.entries[video]
 			if !ok {
-				vi = buildVideoIndex(id, v)
+				entry = newSearchEntry(id, video)
 			}
-			cache[v] = vi
-			idx.videos = append(idx.videos, vi)
+			entries[video] = entry
+			snapshot.entries = append(snapshot.entries, entry)
 		}
 	}
-	l.cache = cache
-	l.index.Store(idx)
+	lib.entries = entries
+	lib.snapshot.Store(snapshot)
 }
 
-// Search ищет фразу во всех каналах или в одном (channelID). Без учёта
-// регистра и разницы «е»/«ё»; пробелы внутри фразы — любые.
-func (l *Library) Search(query, channelID string) Result {
-	q := normalize(strings.Join(strings.Fields(query), " "))
-	res := Result{Query: query, Videos: []VideoHits{}}
-	idx := l.index.Load()
-	if q == "" || idx == nil {
-		return res
+// Search ищет фразу во всех каналах или только в channelID. Регистр, разница
+// между е и ё и лишние пробелы не важны.
+func (lib *Library) Search(query, channelID string) Result {
+	phrase := normalize(strings.Join(strings.Fields(query), " "))
+	result := Result{Query: query, Videos: []VideoHits{}}
+	snapshot := lib.snapshot.Load()
+	if phrase == "" || snapshot == nil {
+		return result
 	}
-	for _, vi := range idx.videos {
-		if channelID != "" && vi.channelID != channelID {
+	for _, entry := range snapshot.entries {
+		if channelID != "" && entry.channelID != channelID {
 			continue
 		}
-		total, hits := vi.find(q)
+		total, hits := entry.find(phrase)
 		if total == 0 {
 			continue
 		}
-		res.TotalHits += total
-		res.TotalVideos++
-		res.Videos = append(res.Videos, VideoHits{
-			ID: vi.v.ID, Title: vi.v.Title, Published: vi.v.Published, Duration: vi.v.Duration,
-			ChannelID: vi.channelID, ChannelTitle: idx.channelTitles[vi.channelID],
+		result.TotalHits += total
+		result.TotalVideos++
+		video := entry.video
+		result.Videos = append(result.Videos, VideoHits{
+			ID: video.ID, Title: video.Title, Published: video.Published, Duration: video.Duration,
+			ChannelID: entry.channelID, ChannelTitle: snapshot.channelTitles[entry.channelID],
 			Total: total, Hits: hits,
 		})
 	}
-	sort.Slice(res.Videos, func(i, j int) bool {
-		a, b := res.Videos[i], res.Videos[j]
-		if a.Total != b.Total {
-			return a.Total > b.Total
+	// Сначала видео, где совпадений больше, при равенстве — свежие.
+	sort.Slice(result.Videos, func(i, j int) bool {
+		left, right := result.Videos[i], result.Videos[j]
+		if left.Total != right.Total {
+			return left.Total > right.Total
 		}
-		return a.Published.After(b.Published)
+		return left.Published.After(right.Published)
 	})
-	if len(res.Videos) > MaxVideos {
-		res.Videos = res.Videos[:MaxVideos]
+	if len(result.Videos) > MaxVideos {
+		result.Videos = result.Videos[:MaxVideos]
 	}
-	return res
+	return result
 }
 
 // find возвращает число совпадений и первые MaxHitsPerVideo из них.
-// Вхождения на соседних строках склеиваются в одно совпадение (не длиннее
-// MaxHitLines строк): иначе их строки контекста повторялись бы подряд.
-func (vi *videoIndex) find(q string) (int, []Hit) {
+// Вхождения на соседних строках или через строку склеиваются в одно
+// совпадение до MaxHitLines строк. Иначе соседние строки повторялись бы.
+func (entry *searchEntry) find(phrase string) (int, []Hit) {
 	var hits []Hit
 	total := 0
-	prevLast, lastKept := -2, false // последняя строка с фразой в текущем совпадении
-	for pos := 0; ; {
-		i := strings.Index(vi.norm[pos:], q)
-		if i < 0 {
+	lastMatchLine := -2 // последняя строка с фразой в текущем совпадении
+	lastShown := false  // попало ли текущее совпадение в ответ
+	lastLine := len(entry.video.Lines) - 1
+	for from := 0; ; {
+		found := strings.Index(entry.text[from:], phrase)
+		if found < 0 {
 			break
 		}
-		a := pos + i
-		b := a + len(q)
-		pos = a + 1
-		first, last := vi.lineAt(a), vi.lineAt(b-1)
-		// Через одну строку контекст двух совпадений уже общий — тоже склеиваем.
-		if total > 0 && first <= prevLast+2 {
-			if !lastKept {
-				prevLast = max(prevLast, last)
+		matchStart := from + found
+		matchEnd := matchStart + len(phrase)
+		from = matchStart + 1
+		firstLine, endLine := entry.lineOf(matchStart), entry.lineOf(matchEnd-1)
+
+		if total > 0 && firstLine <= lastMatchLine+2 {
+			if !lastShown {
+				lastMatchLine = max(lastMatchLine, endLine)
 				continue
 			}
-			h := &hits[len(hits)-1]
-			if end := min(last+1, len(vi.v.Lines)-1); end-h.from+1 <= MaxHitLines {
-				for k := h.from + len(h.Lines); k <= end; k++ {
-					h.Lines = append(h.Lines, HitLine{S: vi.v.Lines[k].Start, T: vi.v.Lines[k].Text})
+			hit := &hits[len(hits)-1]
+			if upTo := min(endLine+1, lastLine); upTo-hit.first+1 <= MaxHitLines {
+				for line := hit.first + len(hit.Lines); line <= upTo; line++ {
+					hit.Lines = append(hit.Lines, entry.hitLine(line))
 				}
-				vi.addMarks(h, a, b)
-				prevLast = max(prevLast, last)
+				entry.addMarks(hit, matchStart, matchEnd)
+				lastMatchLine = max(lastMatchLine, endLine)
 				continue
 			}
 		}
-		prevLast = last
+
+		lastMatchLine = endLine
 		total++
-		if lastKept = len(hits) < MaxHitsPerVideo; !lastKept {
+		if lastShown = len(hits) < MaxHitsPerVideo; !lastShown {
 			continue
 		}
-		hit := Hit{S: vi.v.Lines[first].Start, from: max(first-1, 0)}
-		for k := hit.from; k <= min(last+1, len(vi.v.Lines)-1); k++ {
-			hit.Lines = append(hit.Lines, HitLine{S: vi.v.Lines[k].Start, T: vi.v.Lines[k].Text})
+		hit := Hit{Start: entry.video.Lines[firstLine].Start, first: max(firstLine-1, 0)}
+		for line := hit.first; line <= min(endLine+1, lastLine); line++ {
+			hit.Lines = append(hit.Lines, entry.hitLine(line))
 		}
-		vi.addMarks(&hit, a, b)
+		entry.addMarks(&hit, matchStart, matchEnd)
 		hits = append(hits, hit)
 	}
 	return total, hits
 }
 
-// lineAt — номер строки, в которую попадает байт pos нормализованного текста.
-func (vi *videoIndex) lineAt(pos int) int {
-	return sort.Search(len(vi.offsets), func(i int) bool { return vi.offsets[i] > pos }) - 1
+func (entry *searchEntry) hitLine(line int) HitLine {
+	return HitLine{Start: entry.video.Lines[line].Start, Text: entry.video.Lines[line].Text}
 }
 
-// lineEnd — конец строки k в нормализованном тексте (без пробела-разделителя).
-func (vi *videoIndex) lineEnd(k int) int {
-	if k+1 < len(vi.offsets) {
-		return vi.offsets[k+1] - 1
+// lineOf — номер строки, в которую попадает байт offset склеенного текста.
+func (entry *searchEntry) lineOf(offset int) int {
+	return sort.Search(len(entry.lineStarts), func(i int) bool { return entry.lineStarts[i] > offset }) - 1
+}
+
+// lineEnd — где кончается строка, без пробела после неё.
+func (entry *searchEntry) lineEnd(line int) int {
+	if line+1 < len(entry.lineStarts) {
+		return entry.lineStarts[line+1] - 1
 	}
-	return len(vi.norm)
+	return len(entry.text)
 }
 
-// addMarks подсвечивает байты [a, b) нормализованного текста в строках hit.
-func (vi *videoIndex) addMarks(hit *Hit, a, b int) {
-	for j := range hit.Lines {
-		k := hit.from + j
-		start, end := vi.offsets[k], vi.lineEnd(k)
-		from, to := max(a, start), min(b, end)
+// addMarks подсвечивает найденную фразу во всех строках совпадения, которых
+// она касается. matchStart и matchEnd — байты склеенного текста.
+func (entry *searchEntry) addMarks(hit *Hit, matchStart, matchEnd int) {
+	for i := range hit.Lines {
+		line := hit.first + i
+		lineStart, lineEnd := entry.lineStarts[line], entry.lineEnd(line)
+		from, to := max(matchStart, lineStart), min(matchEnd, lineEnd)
 		if from >= to {
 			continue
 		}
-		hit.Lines[j].Marks = append(hit.Lines[j].Marks, Mark{
-			utf8.RuneCountInString(vi.norm[start:from]),
-			utf8.RuneCountInString(vi.norm[start:to]),
+		hit.Lines[i].Marks = append(hit.Lines[i].Marks, Mark{
+			utf8.RuneCountInString(entry.text[lineStart:from]),
+			utf8.RuneCountInString(entry.text[lineStart:to]),
 		})
 	}
 }

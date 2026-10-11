@@ -42,19 +42,19 @@ func TestParseDuration(t *testing.T) {
 	}
 }
 
-// fakeAPI отдаёт плейлист из pages страниц по 3 видео; каждое третье — трансляция.
+// fakeAPI отдаёт плейлист из pages страниц по 3 видео. Третье видео на странице — трансляция.
 func fakeAPI(t *testing.T, pages int) *httptest.Server {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("X-Goog-Api-Key") != "KEY" || r.URL.Query().Has("key") {
 			w.WriteHeader(http.StatusBadRequest)
 			fmt.Fprint(w, `{"error":{"code":400,"message":"API key not valid.","details":[{"reason":"API_KEY_INVALID"}]}}`)
 			return
 		}
-		q := r.URL.Query()
+		query := r.URL.Query()
 		switch r.URL.Path {
 		case "/playlistItems":
 			page := 0
-			fmt.Sscan(q.Get("pageToken"), &page)
+			fmt.Sscan(query.Get("pageToken"), &page)
 			var items []any
 			for i := range 3 {
 				id := fmt.Sprintf("vid%02d%05d", page, i)
@@ -73,7 +73,7 @@ func fakeAPI(t *testing.T, pages int) *httptest.Server {
 			_ = json.NewEncoder(w).Encode(resp)
 		case "/videos":
 			var items []any
-			for i, id := range strings.Split(q.Get("id"), ",") {
+			for i, id := range strings.Split(query.Get("id"), ",") {
 				live := "none"
 				if i == 2 {
 					live = "upcoming"
@@ -85,12 +85,12 @@ func fakeAPI(t *testing.T, pages int) *httptest.Server {
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"items": items})
 		case "/channels":
-			if q.Get("forHandle") == "@quota" {
+			if query.Get("forHandle") == "@quota" {
 				w.WriteHeader(http.StatusForbidden)
 				fmt.Fprint(w, `{"error":{"code":403,"message":"quota","errors":[{"reason":"quotaExceeded"}]}}`)
 				return
 			}
-			if q.Get("forHandle") != "@bbcnews" {
+			if query.Get("forHandle") != "@bbcnews" {
 				_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{}})
 				return
 			}
@@ -104,21 +104,21 @@ func fakeAPI(t *testing.T, pages int) *httptest.Server {
 			http.NotFound(w, r)
 		}
 	}))
-	t.Cleanup(srv.Close)
-	return srv
+	t.Cleanup(server.Close)
+	return server
 }
 
 func TestUploadsSkipsLiveAndDeletedAndStopsAtLimit(t *testing.T) {
-	srv := fakeAPI(t, 10)
-	videos, err := New("KEY", nil, srv.URL).Uploads(context.Background(), "UUx", 5)
+	server := fakeAPI(t, 10)
+	videos, err := New("KEY", nil, server.URL).Uploads(context.Background(), "UUx", 5)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var ids []string
-	for _, v := range videos {
-		ids = append(ids, v.ID)
-		if v.Duration != 65 {
-			t.Errorf("%s: длительность %d, ожидалось 65", v.ID, v.Duration)
+	for _, video := range videos {
+		ids = append(ids, video.ID)
+		if video.Duration != 65 {
+			t.Errorf("%s: длительность %d, ожидалось 65", video.ID, video.Duration)
 		}
 	}
 	want := "vid0000000 vid0000001 vid0100000 vid0100001 vid0200000"
@@ -128,8 +128,8 @@ func TestUploadsSkipsLiveAndDeletedAndStopsAtLimit(t *testing.T) {
 }
 
 func TestUploadsEndsWithPlaylist(t *testing.T) {
-	srv := fakeAPI(t, 2)
-	videos, err := New("KEY", nil, srv.URL).Uploads(context.Background(), "UUx", 100)
+	server := fakeAPI(t, 2)
+	videos, err := New("KEY", nil, server.URL).Uploads(context.Background(), "UUx", 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,25 +139,25 @@ func TestUploadsEndsWithPlaylist(t *testing.T) {
 }
 
 func TestResolve(t *testing.T) {
-	srv := fakeAPI(t, 1)
-	c := New("KEY", nil, srv.URL)
-	chs, err := c.Resolve(context.Background(), "https://www.youtube.com/@bbcnews")
+	server := fakeAPI(t, 1)
+	client := New("KEY", nil, server.URL)
+	channels, err := client.Resolve(context.Background(), "https://www.youtube.com/@bbcnews")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(chs) != 1 || chs[0].Uploads != "UU16niRr50-MSBwiO3YDb3RA" || chs[0].VideoCount != 15000 || chs[0].Thumb == "" {
-		t.Fatalf("неожиданный канал: %+v", chs)
+	if len(channels) != 1 || channels[0].Uploads != "UU16niRr50-MSBwiO3YDb3RA" || channels[0].VideoCount != 15000 || channels[0].Thumb == "" {
+		t.Fatalf("неожиданный канал: %+v", channels)
 	}
-	if _, err := c.Resolve(context.Background(), "@nobody"); !errors.Is(err, ErrNotFound) {
+	if _, err := client.Resolve(context.Background(), "@nobody"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("неизвестный канал: %v", err)
 	}
-	if _, err := c.Resolve(context.Background(), "@quota"); !errors.Is(err, ErrQuota) {
+	if _, err := client.Resolve(context.Background(), "@quota"); !errors.Is(err, ErrQuota) {
 		t.Errorf("квота: %v", err)
 	}
-	if _, err := New("WRONG", nil, srv.URL).Resolve(context.Background(), "@bbcnews"); !errors.Is(err, ErrBadKey) {
+	if _, err := New("WRONG", nil, server.URL).Resolve(context.Background(), "@bbcnews"); !errors.Is(err, ErrBadKey) {
 		t.Errorf("плохой ключ: %v", err)
 	}
-	if _, err := New("", nil, srv.URL).Resolve(context.Background(), "@bbcnews"); !errors.Is(err, ErrNoKey) {
+	if _, err := New("", nil, server.URL).Resolve(context.Background(), "@bbcnews"); !errors.Is(err, ErrNoKey) {
 		t.Errorf("без ключа: %v", err)
 	}
 }

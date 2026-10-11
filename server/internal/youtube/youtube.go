@@ -1,8 +1,9 @@
-// Package youtube — клиент YouTube Data API v3: найти канал и перечислить
-// его видео. Субтитры этим API не скачать (captions.download только для
-// владельца канала) — их берёт пакет transcript.
+// Package youtube — клиент YouTube Data API v3. Он находит канал и
+// перечисляет его видео. Субтитры этим API не скачать, потому что
+// captions.download работает только для владельца канала. Их берёт пакет
+// transcript.
 //
-// Ключ уходит заголовком X-Goog-Api-Key, а не параметром ?key=: так он не
+// Ключ уходит заголовком X-Goog-Api-Key, а не параметром ?key=. Так он не
 // попадает ни в текст сетевых ошибок, ни в журналы.
 package youtube
 
@@ -25,7 +26,8 @@ var (
 	ErrNoKey = errors.New("не задан ключ YouTube Data API (YOUTUBE_API_KEY)")
 	// ErrBadKey — Google не принял ключ.
 	ErrBadKey = errors.New("ключ YouTube Data API не принят")
-	// ErrQuota — дневная квота ключа исчерпана (сброс в полночь по Тихоокеанскому времени).
+	// ErrQuota — дневная квота ключа исчерпана. Квота сбрасывается в полночь
+	// по Тихоокеанскому времени.
 	ErrQuota = errors.New("квота YouTube Data API на сегодня исчерпана")
 	// ErrNotFound — канал не найден.
 	ErrNotFound = errors.New("канал не найден")
@@ -50,28 +52,28 @@ type Video struct {
 	Live      string    `json:"-"`                  // none, live, upcoming
 }
 
-// Client обращается к API. Пустой ключ — каждый вызов вернёт ErrNoKey.
+// Client обращается к API. С пустым ключом каждый вызов вернёт ErrNoKey.
 type Client struct {
-	key  string
-	http *http.Client
-	base string
+	apiKey     string
+	httpClient *http.Client
+	baseURL    string
 }
 
-// New создаёт клиента; base пустой — настоящий API.
-func New(key string, httpClient *http.Client, base string) *Client {
+// New создаёт клиента. Пустой baseURL означает настоящий API.
+func New(apiKey string, httpClient *http.Client, baseURL string) *Client {
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 20 * time.Second}
 	}
-	if base == "" {
-		base = "https://www.googleapis.com/youtube/v3"
+	if baseURL == "" {
+		baseURL = "https://www.googleapis.com/youtube/v3"
 	}
-	return &Client{key: key, http: httpClient, base: strings.TrimSuffix(base, "/")}
+	return &Client{apiKey: apiKey, httpClient: httpClient, baseURL: strings.TrimSuffix(baseURL, "/")}
 }
 
-// HasKey — ключ задан.
-func (c *Client) HasKey() bool { return c.key != "" }
+// HasKey сообщает, задан ли ключ.
+func (client *Client) HasKey() bool { return client.apiKey != "" }
 
-// Query — что ввёл человек, разобранное по виду.
+// Query — ввод человека, разобранный по виду.
 type Query struct {
 	Kind  string // handle, id, username, video, search
 	Value string
@@ -83,79 +85,83 @@ var (
 	reHandle    = regexp.MustCompile(`^@[\p{L}\p{N}._·-]{3,30}$`)
 )
 
-// ParseQuery понимает @имя, ID канала UC…, ссылки на канал, видео и
-// /user/…; всё прочее — поиск по названию.
-func ParseQuery(s string) Query {
-	s = strings.TrimSpace(s)
+// ParseQuery понимает @имя, ID канала UC…, ссылки на канал, на видео и вида
+// /user/…. Всё остальное считается поиском по названию.
+func ParseQuery(input string) Query {
+	input = strings.TrimSpace(input)
 	switch {
-	case reHandle.MatchString(s):
-		return Query{"handle", s}
-	case reChannelID.MatchString(s):
-		return Query{"id", s}
+	case reHandle.MatchString(input):
+		return Query{"handle", input}
+	case reChannelID.MatchString(input):
+		return Query{"id", input}
 	}
-	if u := parseYouTubeURL(s); u != nil {
-		parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	if pageURL := parseYouTubeURL(input); pageURL != nil {
+		segments := strings.Split(strings.Trim(pageURL.Path, "/"), "/")
 		switch {
-		case u.Host == "youtu.be" && reVideoID.MatchString(parts[0]):
-			return Query{"video", parts[0]}
-		case parts[0] == "watch" && reVideoID.MatchString(u.Query().Get("v")):
-			return Query{"video", u.Query().Get("v")}
-		case (parts[0] == "shorts" || parts[0] == "live" || parts[0] == "embed") && len(parts) > 1 && reVideoID.MatchString(parts[1]):
-			return Query{"video", parts[1]}
-		case strings.HasPrefix(parts[0], "@"):
-			if h, err := url.PathUnescape(parts[0]); err == nil {
-				return Query{"handle", h}
+		case pageURL.Host == "youtu.be" && reVideoID.MatchString(segments[0]):
+			return Query{"video", segments[0]}
+		case segments[0] == "watch" && reVideoID.MatchString(pageURL.Query().Get("v")):
+			return Query{"video", pageURL.Query().Get("v")}
+		case (segments[0] == "shorts" || segments[0] == "live" || segments[0] == "embed") && len(segments) > 1 && reVideoID.MatchString(segments[1]):
+			return Query{"video", segments[1]}
+		case strings.HasPrefix(segments[0], "@"):
+			if handle, err := url.PathUnescape(segments[0]); err == nil {
+				return Query{"handle", handle}
 			}
-		case parts[0] == "channel" && len(parts) > 1 && reChannelID.MatchString(parts[1]):
-			return Query{"id", parts[1]}
-		case parts[0] == "user" && len(parts) > 1:
-			return Query{"username", parts[1]}
-		case parts[0] == "c" && len(parts) > 1:
-			// Старые адреса /c/имя API не разрешает — только поиском.
-			name, _ := url.PathUnescape(parts[1])
+		case segments[0] == "channel" && len(segments) > 1 && reChannelID.MatchString(segments[1]):
+			return Query{"id", segments[1]}
+		case segments[0] == "user" && len(segments) > 1:
+			return Query{"username", segments[1]}
+		case segments[0] == "c" && len(segments) > 1:
+			// API не разрешает старые адреса /c/имя, их можно найти только поиском.
+			name, _ := url.PathUnescape(segments[1])
 			return Query{"search", name}
 		}
 	}
-	return Query{"search", s}
+	return Query{"search", input}
 }
 
-func parseYouTubeURL(s string) *url.URL {
-	if !strings.Contains(s, "://") {
-		s = "https://" + s
+func parseYouTubeURL(input string) *url.URL {
+	if !strings.Contains(input, "://") {
+		input = "https://" + input
 	}
-	u, err := url.Parse(s)
+	parsed, err := url.Parse(input)
 	if err != nil {
 		return nil
 	}
-	u.Host = strings.TrimPrefix(strings.TrimPrefix(strings.ToLower(u.Host), "www."), "m.")
-	if u.Host != "youtube.com" && u.Host != "youtu.be" && u.Host != "music.youtube.com" {
+	parsed.Host = strings.TrimPrefix(strings.TrimPrefix(strings.ToLower(parsed.Host), "www."), "m.")
+	if parsed.Host != "youtube.com" && parsed.Host != "youtu.be" && parsed.Host != "music.youtube.com" {
 		return nil
 	}
-	return u
+	return parsed
 }
 
-// Resolve находит каналы по вводу человека. Для @имени, ссылки или ID —
-// один канал (1–2 единицы квоты); для свободного текста — до 5 кандидатов
-// поиском (100 единиц, поэтому поиск — только по явной просьбе).
-func (c *Client) Resolve(ctx context.Context, input string) ([]Channel, error) {
-	q := ParseQuery(input)
+// channelRefs — ответ videos или search, из которого нужен только ID канала.
+type channelRefs struct {
+	Items []struct {
+		Snippet struct {
+			ChannelID string `json:"channelId"`
+		} `json:"snippet"`
+	} `json:"items"`
+}
+
+// Resolve находит каналы по вводу человека. Для @имени, ссылки или ID это
+// один канал, он стоит 1–2 единицы квоты. Для свободного текста это до 5
+// кандидатов поиском, он стоит 100 единиц. Поэтому поиск включается только по
+// явной просьбе.
+func (client *Client) Resolve(ctx context.Context, input string) ([]Channel, error) {
+	query := ParseQuery(input)
 	params := url.Values{}
-	switch q.Kind {
+	switch query.Kind {
 	case "handle":
-		params.Set("forHandle", q.Value)
+		params.Set("forHandle", query.Value)
 	case "id":
-		params.Set("id", q.Value)
+		params.Set("id", query.Value)
 	case "username":
-		params.Set("forUsername", q.Value)
+		params.Set("forUsername", query.Value)
 	case "video":
-		var resp struct {
-			Items []struct {
-				Snippet struct {
-					ChannelID string `json:"channelId"`
-				} `json:"snippet"`
-			} `json:"items"`
-		}
-		if err := c.get(ctx, "videos", url.Values{"part": {"snippet"}, "id": {q.Value}}, &resp); err != nil {
+		var resp channelRefs
+		if err := client.get(ctx, "videos", url.Values{"part": {"snippet"}, "id": {query.Value}}, &resp); err != nil {
 			return nil, err
 		}
 		if len(resp.Items) == 0 {
@@ -163,44 +169,38 @@ func (c *Client) Resolve(ctx context.Context, input string) ([]Channel, error) {
 		}
 		params.Set("id", resp.Items[0].Snippet.ChannelID)
 	case "search":
-		if q.Value == "" {
+		if query.Value == "" {
 			return nil, ErrNotFound
 		}
-		var resp struct {
-			Items []struct {
-				Snippet struct {
-					ChannelID string `json:"channelId"`
-				} `json:"snippet"`
-			} `json:"items"`
-		}
-		err := c.get(ctx, "search", url.Values{
-			"part": {"snippet"}, "type": {"channel"}, "maxResults": {"5"}, "q": {q.Value},
+		var resp channelRefs
+		err := client.get(ctx, "search", url.Values{
+			"part": {"snippet"}, "type": {"channel"}, "maxResults": {"5"}, "q": {query.Value},
 		}, &resp)
 		if err != nil {
 			return nil, err
 		}
 		ids := make([]string, 0, len(resp.Items))
-		for _, it := range resp.Items {
-			ids = append(ids, it.Snippet.ChannelID)
+		for _, item := range resp.Items {
+			ids = append(ids, item.Snippet.ChannelID)
 		}
 		if len(ids) == 0 {
 			return nil, ErrNotFound
 		}
 		params.Set("id", strings.Join(ids, ","))
 	}
-	return c.channels(ctx, params)
+	return client.channels(ctx, params)
 }
 
-// Channel — канал по ID.
-func (c *Client) Channel(ctx context.Context, id string) (Channel, error) {
-	chs, err := c.channels(ctx, url.Values{"id": {id}})
+// Channel возвращает канал по ID.
+func (client *Client) Channel(ctx context.Context, id string) (Channel, error) {
+	channels, err := client.channels(ctx, url.Values{"id": {id}})
 	if err != nil {
 		return Channel{}, err
 	}
-	return chs[0], nil
+	return channels[0], nil
 }
 
-func (c *Client) channels(ctx context.Context, params url.Values) ([]Channel, error) {
+func (client *Client) channels(ctx context.Context, params url.Values) ([]Channel, error) {
 	params.Set("part", "snippet,contentDetails,statistics")
 	params.Set("maxResults", "50")
 	var resp struct {
@@ -221,46 +221,48 @@ func (c *Client) channels(ctx context.Context, params url.Values) ([]Channel, er
 			} `json:"statistics"`
 		} `json:"items"`
 	}
-	if err := c.get(ctx, "channels", params, &resp); err != nil {
+	if err := client.get(ctx, "channels", params, &resp); err != nil {
 		return nil, err
 	}
 	if len(resp.Items) == 0 {
 		return nil, ErrNotFound
 	}
-	out := make([]Channel, 0, len(resp.Items))
-	for _, it := range resp.Items {
-		n, _ := strconv.Atoi(it.Statistics.VideoCount)
-		out = append(out, Channel{
-			ID:         it.ID,
-			Title:      it.Snippet.Title,
-			Handle:     it.Snippet.CustomURL,
-			Thumb:      it.Snippet.Thumbnails.best(),
-			Uploads:    it.ContentDetails.RelatedPlaylists.Uploads,
-			VideoCount: n,
+	result := make([]Channel, 0, len(resp.Items))
+	for _, item := range resp.Items {
+		videoCount, _ := strconv.Atoi(item.Statistics.VideoCount)
+		result = append(result, Channel{
+			ID:         item.ID,
+			Title:      item.Snippet.Title,
+			Handle:     item.Snippet.CustomURL,
+			Thumb:      item.Snippet.Thumbnails.best(),
+			Uploads:    item.ContentDetails.RelatedPlaylists.Uploads,
+			VideoCount: videoCount,
 		})
 	}
-	return out, nil
+	return result, nil
 }
 
 type thumbnails map[string]struct {
 	URL string `json:"url"`
 }
 
-func (t thumbnails) best() string {
-	for _, k := range []string{"medium", "high", "default"} {
-		if v, ok := t[k]; ok {
-			return v.URL
+// best возвращает адрес первой найденной картинки в порядке medium, high, default.
+func (thumbs thumbnails) best() string {
+	for _, size := range []string{"medium", "high", "default"} {
+		if thumb, ok := thumbs[size]; ok {
+			return thumb.URL
 		}
 	}
 	return ""
 }
 
-// Uploads возвращает до limit последних видео плейлиста загрузок, уже без
-// трансляций и премьер, которые ещё не прошли (у них нет субтитров).
-// Квота: 1 единица на 50 видео плейлиста + 1 на 50 видео подробностей.
-func (c *Client) Uploads(ctx context.Context, playlist string, limit int) ([]Video, error) {
+// Uploads возвращает до limit последних видео плейлиста загрузок. Трансляции
+// и премьеры, которые ещё не прошли, пропускаются, потому что у них нет
+// субтитров. Квота: 1 единица на 50 видео плейлиста и ещё 1 на 50 видео для
+// подробностей.
+func (client *Client) Uploads(ctx context.Context, playlist string, limit int) ([]Video, error) {
 	var videos []Video
-	page := ""
+	pageToken := ""
 	for len(videos) < limit {
 		var resp struct {
 			NextPageToken string `json:"nextPageToken"`
@@ -280,45 +282,46 @@ func (c *Client) Uploads(ctx context.Context, playlist string, limit int) ([]Vid
 		params := url.Values{
 			"part": {"snippet,contentDetails,status"}, "playlistId": {playlist}, "maxResults": {"50"},
 		}
-		if page != "" {
-			params.Set("pageToken", page)
+		if pageToken != "" {
+			params.Set("pageToken", pageToken)
 		}
-		if err := c.get(ctx, "playlistItems", params, &resp); err != nil {
+		if err := client.get(ctx, "playlistItems", params, &resp); err != nil {
 			return nil, err
 		}
 		batch := make([]Video, 0, len(resp.Items))
-		for _, it := range resp.Items {
+		for _, item := range resp.Items {
 			// Приватные и удалённые видео остаются в плейлисте без даты.
-			if it.ContentDetails.VideoPublishedAt == "" || it.Status.PrivacyStatus == "private" {
+			if item.ContentDetails.VideoPublishedAt == "" || item.Status.PrivacyStatus == "private" {
 				continue
 			}
-			published, _ := time.Parse(time.RFC3339, it.ContentDetails.VideoPublishedAt)
-			batch = append(batch, Video{ID: it.ContentDetails.VideoID, Title: it.Snippet.Title, Published: published})
+			published, _ := time.Parse(time.RFC3339, item.ContentDetails.VideoPublishedAt)
+			batch = append(batch, Video{ID: item.ContentDetails.VideoID, Title: item.Snippet.Title, Published: published})
 		}
-		if err := c.details(ctx, batch); err != nil {
+		if err := client.details(ctx, batch); err != nil {
 			return nil, err
 		}
-		for _, v := range batch {
-			if v.Live == "none" && len(videos) < limit {
-				videos = append(videos, v)
+		for _, video := range batch {
+			if video.Live == "none" && len(videos) < limit {
+				videos = append(videos, video)
 			}
 		}
-		page = resp.NextPageToken
-		if page == "" {
+		pageToken = resp.NextPageToken
+		if pageToken == "" {
 			break
 		}
 	}
 	return videos, nil
 }
 
-// details дописывает длительность и признак трансляции (до 50 видео).
-func (c *Client) details(ctx context.Context, videos []Video) error {
+// details дописывает длительность и признак трансляции. За один вызов
+// принимает не больше 50 видео.
+func (client *Client) details(ctx context.Context, videos []Video) error {
 	if len(videos) == 0 {
 		return nil
 	}
 	ids := make([]string, len(videos))
-	for i, v := range videos {
-		ids[i] = v.ID
+	for i, video := range videos {
+		ids[i] = video.ID
 	}
 	var resp struct {
 		Items []struct {
@@ -331,18 +334,18 @@ func (c *Client) details(ctx context.Context, videos []Video) error {
 			} `json:"contentDetails"`
 		} `json:"items"`
 	}
-	err := c.get(ctx, "videos", url.Values{"part": {"snippet,contentDetails"}, "id": {strings.Join(ids, ",")}}, &resp)
+	err := client.get(ctx, "videos", url.Values{"part": {"snippet,contentDetails"}, "id": {strings.Join(ids, ",")}}, &resp)
 	if err != nil {
 		return err
 	}
-	byID := map[string]int{}
-	for i, v := range videos {
-		byID[v.ID] = i
+	indexByID := map[string]int{}
+	for i, video := range videos {
+		indexByID[video.ID] = i
 	}
-	for _, it := range resp.Items {
-		if i, ok := byID[it.ID]; ok {
-			videos[i].Live = it.Snippet.LiveBroadcastContent
-			videos[i].Duration = parseDuration(it.ContentDetails.Duration)
+	for _, item := range resp.Items {
+		if i, ok := indexByID[item.ID]; ok {
+			videos[i].Live = item.Snippet.LiveBroadcastContent
+			videos[i].Duration = parseDuration(item.ContentDetails.Duration)
 		}
 	}
 	return nil
@@ -350,20 +353,21 @@ func (c *Client) details(ctx context.Context, videos []Video) error {
 
 var reDuration = regexp.MustCompile(`^P(?:(\d+)D)?T?(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$`)
 
-// parseDuration переводит ISO 8601 (PT1H2M3S) в секунды.
-func parseDuration(s string) int {
-	m := reDuration.FindStringSubmatch(s)
-	if m == nil {
+// parseDuration переводит длительность ISO 8601 (PT1H2M3S) в секунды.
+func parseDuration(iso string) int {
+	match := reDuration.FindStringSubmatch(iso)
+	if match == nil {
 		return 0
 	}
 	total := 0
-	for i, mul := range []int{86400, 3600, 60, 1} {
-		n, _ := strconv.Atoi(m[i+1])
-		total += n * mul
+	for i, multiplier := range []int{86400, 3600, 60, 1} {
+		amount, _ := strconv.Atoi(match[i+1])
+		total += amount * multiplier
 	}
 	return total
 }
 
+// apiError — тело ошибки, которое присылает Google.
 type apiError struct {
 	Error struct {
 		Code    int    `json:"code"`
@@ -377,16 +381,16 @@ type apiError struct {
 	} `json:"error"`
 }
 
-func (c *Client) get(ctx context.Context, method string, params url.Values, out any) error {
-	if c.key == "" {
+func (client *Client) get(ctx context.Context, endpoint string, params url.Values, result any) error {
+	if client.apiKey == "" {
 		return ErrNoKey
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+"/"+method+"?"+params.Encode(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, client.baseURL+"/"+endpoint+"?"+params.Encode(), nil)
 	if err != nil {
 		return err
 	}
-	req.Header.Set("X-Goog-Api-Key", c.key)
-	resp, err := c.http.Do(req)
+	req.Header.Set("X-Goog-Api-Key", client.apiKey)
+	resp, err := client.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("YouTube Data API: %w", err)
 	}
@@ -396,30 +400,30 @@ func (c *Client) get(ctx context.Context, method string, params url.Values, out 
 		return fmt.Errorf("YouTube Data API: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		var e apiError
-		_ = json.Unmarshal(body, &e)
-		for _, d := range e.Error.Details {
-			if d.Reason == "API_KEY_INVALID" {
+		var apiErr apiError
+		_ = json.Unmarshal(body, &apiErr)
+		for _, detail := range apiErr.Error.Details {
+			if detail.Reason == "API_KEY_INVALID" {
 				return ErrBadKey
 			}
 		}
-		for _, r := range e.Error.Errors {
-			switch r.Reason {
+		for _, entry := range apiErr.Error.Errors {
+			switch entry.Reason {
 			case "quotaExceeded", "dailyLimitExceeded", "rateLimitExceeded":
 				return ErrQuota
 			case "keyInvalid", "accessNotConfigured", "keyExpired":
-				return fmt.Errorf("%w: %s", ErrBadKey, e.Error.Message)
+				return fmt.Errorf("%w: %s", ErrBadKey, apiErr.Error.Message)
 			case "channelNotFound", "playlistNotFound":
 				return ErrNotFound
 			}
 		}
-		if e.Error.Message != "" {
-			return fmt.Errorf("YouTube Data API %s: %s", method, e.Error.Message)
+		if apiErr.Error.Message != "" {
+			return fmt.Errorf("YouTube Data API %s: %s", endpoint, apiErr.Error.Message)
 		}
-		return fmt.Errorf("YouTube Data API %s: %s", method, resp.Status)
+		return fmt.Errorf("YouTube Data API %s: %s", endpoint, resp.Status)
 	}
-	if err := json.Unmarshal(body, out); err != nil {
-		return fmt.Errorf("YouTube Data API %s: %w", method, err)
+	if err := json.Unmarshal(body, result); err != nil {
+		return fmt.Errorf("YouTube Data API %s: %w", endpoint, err)
 	}
 	return nil
 }

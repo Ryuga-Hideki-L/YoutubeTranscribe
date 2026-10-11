@@ -15,25 +15,25 @@ import (
 
 var bbc = youtube.Channel{ID: "UCbbc", Title: "BBC News", Uploads: "UUbbc"}
 
-func lines(texts ...string) *transcript.Transcript {
-	t := &transcript.Transcript{Lang: "ru", Auto: true}
-	for i, s := range texts {
-		t.Lines = append(t.Lines, transcript.Line{Start: float64(i * 2), Dur: 2, Text: s})
+func transcriptOf(texts ...string) *transcript.Transcript {
+	captions := &transcript.Transcript{Lang: "ru", Auto: true}
+	for i, text := range texts {
+		captions.Lines = append(captions.Lines, transcript.Line{Start: float64(i * 2), Dur: 2, Text: text})
 	}
-	return t
+	return captions
 }
 
 func newLib(t *testing.T) (*Library, string) {
 	dir := t.TempDir()
-	l, err := Open(dir)
+	lib, err := Open(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := l.Put(bbc, 200); err != nil {
+	if err := lib.Put(bbc, 200); err != nil {
 		t.Fatal(err)
 	}
 	day := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
-	err = l.Merge(bbc.ID, []youtube.Video{
+	err = lib.Merge(bbc.ID, []youtube.Video{
 		{ID: "v1", Title: "Первое", Published: day},
 		{ID: "v2", Title: "Второе", Published: day.Add(24 * time.Hour)},
 		{ID: "v3", Title: "Третье", Published: day.Add(48 * time.Hour)},
@@ -41,14 +41,14 @@ func newLib(t *testing.T) (*Library, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return l, dir
+	return lib, dir
 }
 
 func TestRoundTripAndTodo(t *testing.T) {
-	l, dir := newLib(t)
-	l.SetResult(bbc.ID, "v1", StatusOK, lines("Привет, мир"), "")
-	l.SetResult(bbc.ID, "v2", StatusBlocked, nil, "капча")
-	if err := l.Flush(); err != nil {
+	lib, dir := newLib(t)
+	lib.SetResult(bbc.ID, "v1", StatusOK, transcriptOf("Привет, мир"), "")
+	lib.SetResult(bbc.ID, "v2", StatusBlocked, nil, "капча")
+	if err := lib.Flush(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -56,38 +56,38 @@ func TestRoundTripAndTodo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, ok := again.Summary(bbc.ID)
+	summary, ok := again.Summary(bbc.ID)
 	if !ok {
 		t.Fatal("канал пропал после перезапуска")
 	}
-	if s.Counts != (Counts{Total: 3, OK: 1, Failed: 1, Pending: 1, Lines: 1}) {
-		t.Errorf("сводка: %+v", s.Counts)
+	if summary.Counts != (Counts{Total: 3, OK: 1, Failed: 1, Pending: 1, Lines: 1}) {
+		t.Errorf("сводка: %+v", summary.Counts)
 	}
 	var todo []string
-	for _, v := range again.Todo(bbc.ID) {
-		todo = append(todo, v.ID)
+	for _, video := range again.Todo(bbc.ID) {
+		todo = append(todo, video.ID)
 	}
-	// Блокировка не финальна: видео снова в очереди; порядок — от новых.
+	// Блокировка не финальна, поэтому видео снова в очереди. Порядок от новых к старым.
 	if strings.Join(todo, " ") != "v3 v2" {
 		t.Errorf("todo = %v, want [v3 v2]", todo)
 	}
-	if r := again.Search("мир", ""); r.TotalHits != 1 {
-		t.Errorf("поиск после перезапуска: %+v", r)
+	if result := again.Search("мир", ""); result.TotalHits != 1 {
+		t.Errorf("поиск после перезапуска: %+v", result)
 	}
 }
 
 func TestMergeKeepsTranscriptsAndOldVideos(t *testing.T) {
-	l, _ := newLib(t)
-	l.SetResult(bbc.ID, "v1", StatusOK, lines("старое видео"), "")
-	l.SetResult(bbc.ID, "v2", StatusOK, lines("второе видео"), "")
+	lib, _ := newLib(t)
+	lib.SetResult(bbc.ID, "v1", StatusOK, transcriptOf("старое видео"), "")
+	lib.SetResult(bbc.ID, "v2", StatusOK, transcriptOf("второе видео"), "")
 	// Новый список: v2 переименовано, v1 выпало (сверх предела), появилось v4.
-	if err := l.Merge(bbc.ID, []youtube.Video{{ID: "v4"}, {ID: "v2", Title: "Новое имя"}}); err != nil {
+	if err := lib.Merge(bbc.ID, []youtube.Video{{ID: "v4"}, {ID: "v2", Title: "Новое имя"}}); err != nil {
 		t.Fatal(err)
 	}
-	r := l.Search("видео", "")
+	result := lib.Search("видео", "")
 	got := map[string]string{}
-	for _, v := range r.Videos {
-		got[v.ID] = v.Title
+	for _, videoHits := range result.Videos {
+		got[videoHits.ID] = videoHits.Title
 	}
 	if len(got) != 2 || got["v2"] != "Новое имя" || got["v1"] != "Первое" {
 		t.Errorf("после слияния: %v", got)
@@ -96,22 +96,22 @@ func TestMergeKeepsTranscriptsAndOldVideos(t *testing.T) {
 
 func TestCorruptFileIsKeptAside(t *testing.T) {
 	dir := t.TempDir()
-	chDir := filepath.Join(dir, "channels")
-	os.MkdirAll(chDir, 0o755)
-	os.WriteFile(filepath.Join(chDir, "UCbad.json"), []byte(`{"version":1,"chan`), 0o644)
-	os.WriteFile(filepath.Join(chDir, "UCold.json.tmp-123"), []byte(`мусор`), 0o644)
+	channelsDir := filepath.Join(dir, "channels")
+	os.MkdirAll(channelsDir, 0o755)
+	os.WriteFile(filepath.Join(channelsDir, "UCbad.json"), []byte(`{"version":1,"chan`), 0o644)
+	os.WriteFile(filepath.Join(channelsDir, "UCold.json.tmp-123"), []byte(`мусор`), 0o644)
 
-	l, err := Open(dir)
+	lib, err := Open(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(l.Summaries()) != 0 {
+	if len(lib.Summaries()) != 0 {
 		t.Error("битый канал загружен")
 	}
-	entries, _ := os.ReadDir(chDir)
+	entries, _ := os.ReadDir(channelsDir)
 	var names []string
-	for _, e := range entries {
-		names = append(names, e.Name())
+	for _, entry := range entries {
+		names = append(names, entry.Name())
 	}
 	joined := strings.Join(names, " ")
 	if !strings.Contains(joined, "UCbad.json.corrupt-") || strings.Contains(joined, "UCbad.json ") {
@@ -120,60 +120,60 @@ func TestCorruptFileIsKeptAside(t *testing.T) {
 }
 
 func TestRemove(t *testing.T) {
-	l, dir := newLib(t)
-	l.SetResult(bbc.ID, "v1", StatusOK, lines("текст"), "")
-	if err := l.Remove(bbc.ID); err != nil {
+	lib, dir := newLib(t)
+	lib.SetResult(bbc.ID, "v1", StatusOK, transcriptOf("текст"), "")
+	if err := lib.Remove(bbc.ID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "channels", bbc.ID+".json")); !os.IsNotExist(err) {
 		t.Error("файл канала остался")
 	}
-	if r := l.Search("текст", ""); r.TotalHits != 0 {
+	if result := lib.Search("текст", ""); result.TotalHits != 0 {
 		t.Error("удалённый канал всё ещё ищется")
 	}
 }
 
 func TestSearch(t *testing.T) {
-	l, _ := newLib(t)
-	l.SetResult(bbc.ID, "v1", StatusOK, lines(
+	lib, _ := newLib(t)
+	lib.SetResult(bbc.ID, "v1", StatusOK, transcriptOf(
 		"Ёлка стоит в углу",
 		"а потом мы пошли",
 		"в магазин за хлебом",
 		"и снова ёлка, ёлка",
 	), "")
-	l.SetResult(bbc.ID, "v2", StatusOK, lines("здесь только ЕЛКА"), "")
+	lib.SetResult(bbc.ID, "v2", StatusOK, transcriptOf("здесь только ЕЛКА"), "")
 
 	t.Run("регистр и ё", func(t *testing.T) {
-		r := l.Search("елка", "")
-		if r.TotalHits != 3 || r.TotalVideos != 2 {
-			t.Fatalf("hits %d videos %d", r.TotalHits, r.TotalVideos)
+		result := lib.Search("елка", "")
+		if result.TotalHits != 3 || result.TotalVideos != 2 {
+			t.Fatalf("hits %d videos %d", result.TotalHits, result.TotalVideos)
 		}
 		// Сначала видео с большим числом совпадений.
-		v := r.Videos[0]
-		if v.ID != "v1" || v.Total != 2 {
-			t.Fatalf("первое видео %s (%d)", v.ID, v.Total)
+		videoHits := result.Videos[0]
+		if videoHits.ID != "v1" || videoHits.Total != 2 {
+			t.Fatalf("первое видео %s (%d)", videoHits.ID, videoHits.Total)
 		}
 		// Два вхождения в одной строке — одно совпадение с двумя подсветками.
-		last := v.Hits[1]
+		last := videoHits.Hits[1]
 		line := last.Lines[len(last.Lines)-1]
-		if line.T != "и снова ёлка, ёлка" || fmt.Sprint(line.Marks) != "[[8 12] [14 18]]" {
+		if line.Text != "и снова ёлка, ёлка" || fmt.Sprint(line.Marks) != "[[8 12] [14 18]]" {
 			t.Errorf("подсветка: %+v", line)
 		}
 	})
 
 	t.Run("фраза через границу строк", func(t *testing.T) {
-		r := l.Search("мы  пошли в магазин", "")
-		if r.TotalHits != 1 {
-			t.Fatalf("hits %d", r.TotalHits)
+		result := lib.Search("мы  пошли в магазин", "")
+		if result.TotalHits != 1 {
+			t.Fatalf("hits %d", result.TotalHits)
 		}
-		h := r.Videos[0].Hits[0]
-		if h.S != 2 {
-			t.Errorf("время совпадения %v, want 2", h.S)
+		hit := result.Videos[0].Hits[0]
+		if hit.Start != 2 {
+			t.Errorf("время совпадения %v, want 2", hit.Start)
 		}
 		// Контекст: строка до, две строки с фразой, строка после.
 		var got []string
-		for _, ln := range h.Lines {
-			got = append(got, fmt.Sprintf("%s%v", ln.T, ln.Marks))
+		for _, line := range hit.Lines {
+			got = append(got, fmt.Sprintf("%s%v", line.Text, line.Marks))
 		}
 		want := "Ёлка стоит в углу[] а потом мы пошли[[8 16]] в магазин за хлебом[[0 9]] и снова ёлка, ёлка[]"
 		if strings.Join(got, " ") != want {
@@ -182,126 +182,126 @@ func TestSearch(t *testing.T) {
 	})
 
 	t.Run("фильтр по каналу и пустой запрос", func(t *testing.T) {
-		if r := l.Search("елка", "UCother"); r.TotalHits != 0 {
+		if result := lib.Search("елка", "UCother"); result.TotalHits != 0 {
 			t.Error("фильтр по каналу не сработал")
 		}
-		if r := l.Search("   ", ""); r.TotalHits != 0 || r.Videos == nil {
-			t.Errorf("пустой запрос: %+v", r)
+		if result := lib.Search("   ", ""); result.TotalHits != 0 || result.Videos == nil {
+			t.Errorf("пустой запрос: %+v", result)
 		}
 	})
 }
 
 func TestSearchCapsHits(t *testing.T) {
-	l, _ := newLib(t)
+	lib, _ := newLib(t)
 	var texts []string
-	// Между вхождениями по две пустые по смыслу строки — чтобы они не склеились.
+	// Между вхождениями две пустые по смыслу строки, чтобы совпадения не склеились.
 	for i := range MaxHitsPerVideo + 10 {
 		texts = append(texts, fmt.Sprintf("слово %d слово", i), "пауза", "пауза")
 	}
-	l.SetResult(bbc.ID, "v1", StatusOK, lines(texts...), "")
-	r := l.Search("слово", "")
-	v := r.Videos[0]
-	if v.Total != MaxHitsPerVideo+10 || len(v.Hits) != MaxHitsPerVideo {
-		t.Fatalf("total %d hits %d", v.Total, len(v.Hits))
+	lib.SetResult(bbc.ID, "v1", StatusOK, transcriptOf(texts...), "")
+	result := lib.Search("слово", "")
+	videoHits := result.Videos[0]
+	if videoHits.Total != MaxHitsPerVideo+10 || len(videoHits.Hits) != MaxHitsPerVideo {
+		t.Fatalf("total %d hits %d", videoHits.Total, len(videoHits.Hits))
 	}
-	for _, h := range v.Hits {
-		for _, ln := range h.Lines {
-			if len(ln.Marks) > 2 {
-				t.Fatalf("лишние подсветки: %+v", ln)
+	for _, hit := range videoHits.Hits {
+		for _, line := range hit.Lines {
+			if len(line.Marks) > 2 {
+				t.Fatalf("лишние подсветки: %+v", line)
 			}
 		}
 	}
 }
 
 func BenchmarkSearch(b *testing.B) {
-	l, err := Open(b.TempDir())
+	lib, err := Open(b.TempDir())
 	if err != nil {
 		b.Fatal(err)
 	}
-	l.Put(bbc, 200)
+	lib.Put(bbc, 200)
 	words := strings.Fields("сегодня мы поговорим о том как устроен мир новостей и почему это важно для каждого")
 	var videos []youtube.Video
 	for i := range 200 {
 		videos = append(videos, youtube.Video{ID: fmt.Sprint("v", i)})
 	}
-	l.Merge(bbc.ID, videos)
+	lib.Merge(bbc.ID, videos)
 	for i := range 200 {
 		var texts []string
 		for j := range 1000 {
 			texts = append(texts, strings.Join(words[(i+j)%5:(i+j)%5+8], " "))
 		}
-		l.SetResult(bbc.ID, fmt.Sprint("v", i), StatusOK, lines(texts...), "")
+		lib.SetResult(bbc.ID, fmt.Sprint("v", i), StatusOK, transcriptOf(texts...), "")
 	}
 	b.ResetTimer()
 	for b.Loop() {
-		l.Search("почему это важно", "")
+		lib.Search("почему это важно", "")
 	}
 }
 
 func TestAdjacentMatchesMerge(t *testing.T) {
-	l, _ := newLib(t)
-	l.SetResult(bbc.ID, "v1", StatusOK, lines(
+	lib, _ := newLib(t)
+	lib.SetResult(bbc.ID, "v1", StatusOK, transcriptOf(
 		"начало",
 		"Голливуд раз",    // 1
-		"Голливуд два",    // 2 — соседняя: в то же совпадение
+		"Голливуд два",    // 2, соседняя: в то же совпадение
 		"середина",        //
-		"Голливуд три",    // 4 — через строку: тоже склеивается
+		"Голливуд три",    // 4, через строку: тоже склеивается
 		"тишина",          //
 		"тишина",          //
 		"тишина",          //
-		"Голливуд четыре", // 8 — далеко: новое совпадение
+		"Голливуд четыре", // 8, далеко: новое совпадение
 		"конец",
 	), "")
-	v := l.Search("голливуд", "").Videos[0]
-	if v.Total != 2 || len(v.Hits) != 2 {
-		t.Fatalf("total %d hits %d, want 2 и 2", v.Total, len(v.Hits))
+	videoHits := lib.Search("голливуд", "").Videos[0]
+	if videoHits.Total != 2 || len(videoHits.Hits) != 2 {
+		t.Fatalf("total %d hits %d, want 2 и 2", videoHits.Total, len(videoHits.Hits))
 	}
-	first := v.Hits[0]
+	first := videoHits.Hits[0]
 	var marked []string
-	for _, ln := range first.Lines {
-		if len(ln.Marks) > 0 {
-			marked = append(marked, ln.T)
+	for _, line := range first.Lines {
+		if len(line.Marks) > 0 {
+			marked = append(marked, line.Text)
 		}
 	}
 	if len(first.Lines) != 6 || strings.Join(marked, "|") != "Голливуд раз|Голливуд два|Голливуд три" {
 		t.Errorf("первое совпадение: %d строк, подсвечены %v", len(first.Lines), marked)
 	}
-	if v.Hits[1].S != 16 {
-		t.Errorf("второе совпадение с %v, want 16", v.Hits[1].S)
+	if videoHits.Hits[1].Start != 16 {
+		t.Errorf("второе совпадение с %v, want 16", videoHits.Hits[1].Start)
 	}
 }
 
 func TestLongRunOfMatchesIsSplit(t *testing.T) {
-	l, _ := newLib(t)
+	lib, _ := newLib(t)
 	var texts []string
 	for range 20 {
 		texts = append(texts, "да да")
 	}
-	l.SetResult(bbc.ID, "v1", StatusOK, lines(texts...), "")
-	v := l.Search("да", "").Videos[0]
-	for _, h := range v.Hits {
-		if len(h.Lines) > MaxHitLines {
-			t.Fatalf("совпадение из %d строк", len(h.Lines))
+	lib.SetResult(bbc.ID, "v1", StatusOK, transcriptOf(texts...), "")
+	videoHits := lib.Search("да", "").Videos[0]
+	for _, hit := range videoHits.Hits {
+		if len(hit.Lines) > MaxHitLines {
+			t.Fatalf("совпадение из %d строк", len(hit.Lines))
 		}
 	}
-	if v.Total < 3 {
-		t.Errorf("20 строк подряд склеились в %d совпадений", v.Total)
+	if videoHits.Total < 3 {
+		t.Errorf("20 строк подряд склеились в %d совпадений", videoHits.Total)
 	}
 }
 
 func TestFreshVideoWithoutCaptionsIsRechecked(t *testing.T) {
-	l, _ := newLib(t)
+	lib, _ := newLib(t)
 	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
-	l.now = func() time.Time { return now }
+	lib.now = func() time.Time { return now }
 	// v3 опубликовано 3 октября (6,5 дня назад), v1 — 1 октября (8,5 дня).
-	l.SetResult(bbc.ID, "v3", StatusNoCaptions, nil, "")
-	l.SetResult(bbc.ID, "v1", StatusNoCaptions, nil, "")
-	l.SetResult(bbc.ID, "v2", StatusOK, lines("текст"), "")
+	lib.SetResult(bbc.ID, "v3", StatusNoCaptions, nil, "")
+	lib.SetResult(bbc.ID, "v1", StatusNoCaptions, nil, "")
+	lib.SetResult(bbc.ID, "v2", StatusOK, transcriptOf("текст"), "")
 
 	todo := func() string {
 		var ids []string
-		for _, v := range l.Todo(bbc.ID) {
-			ids = append(ids, v.ID)
+		for _, video := range lib.Todo(bbc.ID) {
+			ids = append(ids, video.ID)
 		}
 		return strings.Join(ids, " ")
 	}
@@ -338,8 +338,8 @@ func TestLockDir(t *testing.T) {
 }
 
 func TestFlushDoesNotHoldLockWhileWriting(t *testing.T) {
-	l, dir := newLib(t)
-	l.SetResult(bbc.ID, "v1", StatusOK, lines("текст"), "")
+	lib, dir := newLib(t)
+	lib.SetResult(bbc.ID, "v1", StatusOK, transcriptOf("текст"), "")
 
 	writing, release := make(chan struct{}), make(chan struct{})
 	writeFile = func(path string, data []byte) error {
@@ -350,15 +350,15 @@ func TestFlushDoesNotHoldLockWhileWriting(t *testing.T) {
 	defer func() { writeFile = writeAtomic }()
 
 	flushed := make(chan error)
-	go func() { flushed <- l.Flush() }()
+	go func() { flushed <- lib.Flush() }()
 	<-writing
 
 	// Пока файл пишется, чтение и SetResult не ждут записи.
 	done := make(chan struct{})
 	go func() {
-		l.Summaries()
-		l.Search("текст", "")
-		l.SetResult(bbc.ID, "v2", StatusOK, lines("второе"), "")
+		lib.Summaries()
+		lib.Search("текст", "")
+		lib.SetResult(bbc.ID, "v2", StatusOK, transcriptOf("второе"), "")
 		close(done)
 	}()
 	select {
@@ -369,7 +369,7 @@ func TestFlushDoesNotHoldLockWhileWriting(t *testing.T) {
 
 	// Удаление ждёт конца записи и не даёт ей вернуть файл.
 	removed := make(chan error)
-	go func() { removed <- l.Remove(bbc.ID) }()
+	go func() { removed <- lib.Remove(bbc.ID) }()
 	select {
 	case <-removed:
 		t.Fatal("удаление не дождалось идущей записи")
@@ -388,18 +388,18 @@ func TestFlushDoesNotHoldLockWhileWriting(t *testing.T) {
 }
 
 func TestFailedWriteStaysDirty(t *testing.T) {
-	l, dir := newLib(t)
-	l.SetResult(bbc.ID, "v1", StatusOK, lines("текст"), "")
+	lib, dir := newLib(t)
+	lib.SetResult(bbc.ID, "v1", StatusOK, transcriptOf("текст"), "")
 	writeFile = func(string, []byte) error { return errors.New("диск полон") }
-	if err := l.Flush(); err == nil {
+	if err := lib.Flush(); err == nil {
 		t.Fatal("ошибка записи потерялась")
 	}
 	writeFile = writeAtomic
-	if err := l.Flush(); err != nil {
+	if err := lib.Flush(); err != nil {
 		t.Fatal(err)
 	}
 	again, _ := Open(dir)
-	if s, _ := again.Summary(bbc.ID); s.Counts.OK != 1 {
-		t.Errorf("после повторной записи: %+v", s.Counts)
+	if summary, _ := again.Summary(bbc.ID); summary.Counts.OK != 1 {
+		t.Errorf("после повторной записи: %+v", summary.Counts)
 	}
 }
