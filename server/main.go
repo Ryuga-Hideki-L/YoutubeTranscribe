@@ -36,6 +36,7 @@ func main() {
 	limit := flag.Int("limit", 200, "сколько последних видео канала индексировать по умолчанию")
 	langs := flag.String("langs", "ru,en", "языки ручных субтитров по порядку, если язык речи не виден")
 	clientVersion := flag.String("client-version", transcript.DefaultClientVersion, "версия клиента Android для плеера YouTube")
+	ytdlp := flag.String("ytdlp", "auto", "запасной путь через yt-dlp: auto (если есть в PATH), off или путь к программе")
 	dev := flag.Bool("dev", false, "стартовать без собранного фронта (для разработки с ng serve)")
 	flag.Parse()
 
@@ -53,8 +54,12 @@ func main() {
 	// HTTP-клиент по умолчанию берёт HTTPS_PROXY из окружения — через него
 	// можно обойти блокировку адреса YouTube.
 	yt := youtube.New(os.Getenv("YOUTUBE_API_KEY"), nil, "")
-	tr := transcript.New(transcript.Options{ClientVersion: *clientVersion, Langs: splitList(*langs)})
-	ix := indexer.New(lib, yt, tr, indexer.Config{StatePath: filepath.Join(*dataDir, "state.json")})
+	var fetcher indexer.Fetcher = transcript.New(transcript.Options{ClientVersion: *clientVersion, Langs: splitList(*langs)})
+	if path := ytdlpPath(*ytdlp); path != "" {
+		log.Printf("запасной путь субтитров: %s", path)
+		fetcher = transcript.Fallback{Primary: fetcher, Secondary: &transcript.YtDlp{Path: path, Langs: splitList(*langs)}}
+	}
+	ix := indexer.New(lib, yt, fetcher, indexer.Config{StatePath: filepath.Join(*dataDir, "state.json")})
 	srvAPI := api.New(lib, ix, yt, *limit)
 
 	mux := http.NewServeMux()
@@ -144,6 +149,16 @@ func loadDotEnv(path string) {
 			os.Setenv(key, value)
 		}
 	}
+}
+
+func ytdlpPath(flagValue string) string {
+	switch flagValue {
+	case "off", "":
+		return ""
+	case "auto":
+		return transcript.FindYtDlp()
+	}
+	return flagValue
 }
 
 func splitList(s string) []string {

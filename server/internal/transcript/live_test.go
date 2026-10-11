@@ -46,3 +46,19 @@ func TestLive(t *testing.T) {
 func TestLiveRestrictedMode(t *testing.T) {
 	t.Logf("Restricted Mode в DNS этой сети: %v", RestrictedMode(context.Background(), nil))
 }
+
+func TestLiveYtDlp(t *testing.T) {
+	path := FindYtDlp()
+	if path == "" {
+		t.Skip("yt-dlp нет в PATH")
+	}
+	// Как в приложении: -langs ru,en по умолчанию (language у этого видео пуст).
+	tr, err := (&YtDlp{Path: path, Langs: []string{"ru", "en"}}).Fetch(context.Background(), "jNQXAC9IVRw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("yt-dlp: %s auto=%v, %d строк; первая: %q", tr.Lang, tr.Auto, len(tr.Lines), tr.Lines[0].Text)
+	if tr.Lang != "en" {
+		t.Errorf("язык %s, want en", tr.Lang)
+	}
+}
