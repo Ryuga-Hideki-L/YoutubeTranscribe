@@ -12,6 +12,7 @@ import (
 const (
 	MaxVideos       = 60
 	MaxHitsPerVideo = 50
+	MaxHitLines     = 6 // строк в одном совпадении вместе с контекстом
 )
 
 // Mark — подсвеченный кусок строки: [от, до) в символах (кодовых точках).
@@ -165,12 +166,12 @@ func (l *Library) Search(query, channelID string) Result {
 }
 
 // find возвращает число совпадений и первые MaxHitsPerVideo из них.
-// Несколько вхождений в одной строке — одно совпадение с несколькими
-// подсветками.
+// Вхождения на соседних строках склеиваются в одно совпадение (не длиннее
+// MaxHitLines строк): иначе их строки контекста повторялись бы подряд.
 func (vi *videoIndex) find(q string) (int, []Hit) {
 	var hits []Hit
 	total := 0
-	lastStart, lastKept := -1, false
+	prevLast, lastKept := -2, false // последняя строка с фразой в текущем совпадении
 	for pos := 0; ; {
 		i := strings.Index(vi.norm[pos:], q)
 		if i < 0 {
@@ -180,13 +181,23 @@ func (vi *videoIndex) find(q string) (int, []Hit) {
 		b := a + len(q)
 		pos = a + 1
 		first, last := vi.lineAt(a), vi.lineAt(b-1)
-		if first == lastStart {
-			if lastKept {
-				vi.addMarks(&hits[len(hits)-1], a, b)
+		// Через одну строку контекст двух совпадений уже общий — тоже склеиваем.
+		if total > 0 && first <= prevLast+2 {
+			if !lastKept {
+				prevLast = max(prevLast, last)
+				continue
 			}
-			continue
+			h := &hits[len(hits)-1]
+			if end := min(last+1, len(vi.v.Lines)-1); end-h.from+1 <= MaxHitLines {
+				for k := h.from + len(h.Lines); k <= end; k++ {
+					h.Lines = append(h.Lines, HitLine{S: vi.v.Lines[k].Start, T: vi.v.Lines[k].Text})
+				}
+				vi.addMarks(h, a, b)
+				prevLast = max(prevLast, last)
+				continue
+			}
 		}
-		lastStart = first
+		prevLast = last
 		total++
 		if lastKept = len(hits) < MaxHitsPerVideo; !lastKept {
 			continue

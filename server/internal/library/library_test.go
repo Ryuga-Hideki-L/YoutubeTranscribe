@@ -193,8 +193,9 @@ func TestSearch(t *testing.T) {
 func TestSearchCapsHits(t *testing.T) {
 	l, _ := newLib(t)
 	var texts []string
+	// Между вхождениями по две пустые по смыслу строки — чтобы они не склеились.
 	for i := range MaxHitsPerVideo + 10 {
-		texts = append(texts, fmt.Sprintf("слово %d слово", i))
+		texts = append(texts, fmt.Sprintf("слово %d слово", i), "пауза", "пауза")
 	}
 	l.SetResult(bbc.ID, "v1", StatusOK, lines(texts...), "")
 	r := l.Search("слово", "")
@@ -233,5 +234,56 @@ func BenchmarkSearch(b *testing.B) {
 	b.ResetTimer()
 	for b.Loop() {
 		l.Search("почему это важно", "")
+	}
+}
+
+func TestAdjacentMatchesMerge(t *testing.T) {
+	l, _ := newLib(t)
+	l.SetResult(bbc.ID, "v1", StatusOK, lines(
+		"начало",
+		"Голливуд раз",    // 1
+		"Голливуд два",    // 2 — соседняя: в то же совпадение
+		"середина",        //
+		"Голливуд три",    // 4 — через строку: тоже склеивается
+		"тишина",          //
+		"тишина",          //
+		"тишина",          //
+		"Голливуд четыре", // 8 — далеко: новое совпадение
+		"конец",
+	), "")
+	v := l.Search("голливуд", "").Videos[0]
+	if v.Total != 2 || len(v.Hits) != 2 {
+		t.Fatalf("total %d hits %d, want 2 и 2", v.Total, len(v.Hits))
+	}
+	first := v.Hits[0]
+	var marked []string
+	for _, ln := range first.Lines {
+		if len(ln.Marks) > 0 {
+			marked = append(marked, ln.T)
+		}
+	}
+	if len(first.Lines) != 6 || strings.Join(marked, "|") != "Голливуд раз|Голливуд два|Голливуд три" {
+		t.Errorf("первое совпадение: %d строк, подсвечены %v", len(first.Lines), marked)
+	}
+	if v.Hits[1].S != 16 {
+		t.Errorf("второе совпадение с %v, want 16", v.Hits[1].S)
+	}
+}
+
+func TestLongRunOfMatchesIsSplit(t *testing.T) {
+	l, _ := newLib(t)
+	var texts []string
+	for range 20 {
+		texts = append(texts, "да да")
+	}
+	l.SetResult(bbc.ID, "v1", StatusOK, lines(texts...), "")
+	v := l.Search("да", "").Videos[0]
+	for _, h := range v.Hits {
+		if len(h.Lines) > MaxHitLines {
+			t.Fatalf("совпадение из %d строк", len(h.Lines))
+		}
+	}
+	if v.Total < 3 {
+		t.Errorf("20 строк подряд склеились в %d совпадений", v.Total)
 	}
 }
