@@ -1,6 +1,7 @@
 package library
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -315,4 +316,23 @@ func TestFreshVideoWithoutCaptionsIsRechecked(t *testing.T) {
 	if got := todo(); got != "" {
 		t.Errorf("через неделю: %q — свежесть прошла, ждали пусто", got)
 	}
+}
+
+func TestLockDir(t *testing.T) {
+	dir := t.TempDir()
+	release, err := LockDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// flock действует на открытый файл, поэтому второй open в том же
+	// процессе ведёт себя как второй сервер.
+	if _, err := LockDir(dir); !errors.Is(err, ErrLocked) {
+		t.Fatalf("второй захват: %v, ждали ErrLocked", err)
+	}
+	release()
+	again, err := LockDir(dir)
+	if err != nil {
+		t.Fatalf("после release: %v", err)
+	}
+	again()
 }

@@ -14,6 +14,7 @@ import (
 	"errors"
 	"flag"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -46,6 +47,13 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	// Блокировка — до чтения библиотеки: второй сервер на той же папке
+	// затёр бы файлы каналов первого.
+	unlock, err := library.LockDir(*dataDir)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer unlock()
 	lib, err := library.Open(*dataDir)
 	if err != nil {
 		log.Fatalf("библиотека в %s: %v", *dataDir, err)
@@ -74,6 +82,13 @@ func main() {
 	}
 	srv.RegisterOnShutdown(srvAPI.Shutdown)
 
+	// Порт — до запуска индексации: занятый порт должен остановить запуск
+	// раньше, чем рабочий сходит в YouTube.
+	ln, err := net.Listen("tcp", *addr)
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -85,7 +100,7 @@ func main() {
 	go ix.CheckNetwork(ctx)
 	ix.ResumePending()
 
-	// ListenAndServe возвращается сразу после Shutdown, а сам Shutdown ещё
+	// Serve возвращается сразу после Shutdown, а сам Shutdown ещё
 	// дожидается открытых запросов — main ждёт его по stopped.
 	stopped := make(chan struct{})
 	go func() {
@@ -105,7 +120,7 @@ func main() {
 		log.Print("нет YOUTUBE_API_KEY: поиск по скачанному работает, новые каналы не добавить")
 	}
 	log.Printf("Дословно: http://%s (данные в %s)", *addr, *dataDir)
-	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
 	<-stopped
