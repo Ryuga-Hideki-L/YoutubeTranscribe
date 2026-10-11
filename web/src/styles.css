@@ -4,7 +4,8 @@
  * Токены. Цвета — только отсюда, в компонентах — var(--…).
  * Тёмная тема без светлых плашек: акцентные блоки — тёмный оттенок цвета
  * (HSL-яркость 20–30 %) с рамкой, текст на них остаётся светлым.
- * Контраст посчитан по WCAG относительно --surface.
+ * Контраст посчитан по WCAG относительно --surface: текст состояний
+ * (ok, warn, danger, accent-text) — не ниже 7:1 в обеих темах.
  */
 :root {
   color-scheme: light;
@@ -13,11 +14,11 @@
   --surface-raised: #f3eee2;
   --text: #1d1d1b;
   --text-muted: #5c5b57;
-  --text-subtle: #75736d;
+  --text-subtle: #686661; /* 5,6:1 */
   --line: rgba(29, 29, 27, 0.14);
   --line-strong: rgba(29, 29, 27, 0.26);
   --accent: #ff5f57;
-  --accent-text: #c9302a;
+  --accent-text: #a52723; /* 7,1:1 */
   --accent-block: #fde4e0;
   --accent-block-edge: rgba(201, 48, 42, 0.32);
   --primary-bg: #1d1d1b;
@@ -25,11 +26,11 @@
   --primary-edge: #1d1d1b;
   --mark-bg: #ffe9a3;
   --mark-text: #1d1d1b;
-  --ok: #176b43;
-  --warn: #8a5a00;
+  --ok: #15643e; /* 7,1:1 */
+  --warn: #794f00; /* 7:1 */
   --warn-block: #fbf0d0;
   --warn-block-edge: rgba(138, 90, 0, 0.3);
-  --danger: #c9302a;
+  --danger: #a52723; /* 7,1:1 */
   --chip-bg: #eee9dc;
   --chip-edge: rgba(29, 29, 27, 0.12);
   --focus: #1d1d1b;
