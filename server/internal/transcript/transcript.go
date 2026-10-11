@@ -43,6 +43,9 @@ var (
 	ErrAgeRestricted = errors.New("видео с возрастным ограничением")
 	// ErrPoToken — дорожка требует PO-токен, без браузера её не скачать.
 	ErrPoToken = errors.New("YouTube требует PO-токен для этих субтитров")
+	// ErrNetwork — запрос не дошёл: нет сети, DNS, прокси, таймаут. С самим
+	// видео всё может быть в порядке — его надо повторить позже.
+	ErrNetwork = errors.New("нет связи с YouTube")
 )
 
 // Line — одна строка субтитров: начало и длительность в секундах.
@@ -433,12 +436,12 @@ func (c *Client) do(session *http.Client, req *http.Request) ([]byte, error) {
 	req.Header.Set("Accept-Language", "en-US")
 	resp, err := session.Do(req)
 	if err != nil {
-		return nil, redact(err)
+		return nil, transportError(err)
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 	if err != nil {
-		return nil, redact(err)
+		return nil, transportError(err)
 	}
 	switch {
 	case resp.StatusCode == http.StatusTooManyRequests:
@@ -447,6 +450,15 @@ func (c *Client) do(session *http.Client, req *http.Request) ([]byte, error) {
 		return nil, fmt.Errorf("YouTube ответил %s на %s", resp.Status, req.URL.Path)
 	}
 	return body, nil
+}
+
+// transportError — запрос не дошёл или оборвался. Отмена извне остаётся
+// отменой, остальное (DNS, соединение, таймаут) — ErrNetwork.
+func transportError(err error) error {
+	if errors.Is(err, context.Canceled) {
+		return redact(err)
+	}
+	return fmt.Errorf("%w: %v", ErrNetwork, redact(err))
 }
 
 // redact убирает адрес запроса из сетевой ошибки: в нём ключ и подписи.

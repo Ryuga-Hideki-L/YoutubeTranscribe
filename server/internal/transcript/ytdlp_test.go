@@ -98,6 +98,7 @@ func TestFallback(t *testing.T) {
 		{"непонятный ответ — пробуем yt-dlp", errors.New("ответ плеера: unexpected EOF"), nil, true, nil},
 		{"блокировка — yt-dlp не трогаем", ErrBlocked, nil, false, ErrBlocked},
 		{"нет субтитров — окончательно", ErrNoTranscript, nil, false, ErrNoTranscript},
+		{"нет сети — yt-dlp не трогаем", fmt.Errorf("%w: dial", ErrNetwork), nil, false, ErrNetwork},
 		{"yt-dlp тоже заблокирован — это блокировка", ErrPoToken, ErrBlocked, true, ErrBlocked},
 		{"yt-dlp не смог — остаётся исходная ошибка", ErrPoToken, errors.New("boom"), true, ErrPoToken},
 	}

@@ -37,6 +37,12 @@ const (
 	StateFailed    State = "failed"    // не удалось начать (ключ, квота, канал)
 )
 
+// Причины паузы задания (Job.Reason).
+const (
+	ReasonBlocked = "blocked" // YouTube блокирует адрес
+	ReasonNetwork = "network" // нет связи с YouTube
+)
+
 // Job — задание индексации канала (последнее по времени).
 type Job struct {
 	ChannelID     string    `json:"channelId"`
@@ -48,6 +54,7 @@ type Job struct {
 	Failed        int       `json:"failed"`
 	Current       string    `json:"current,omitempty"` // название текущего видео
 	CooldownUntil time.Time `json:"cooldownUntil,omitzero"`
+	Reason        string    `json:"reason,omitempty"` // причина паузы или остановки: blocked, network
 	Error         string    `json:"error,omitempty"`
 	StartedAt     time.Time `json:"startedAt,omitzero"`
 	FinishedAt    time.Time `json:"finishedAt,omitzero"`
@@ -67,16 +74,18 @@ type Lister interface {
 
 // Config — ритм и предохранитель. Нулевые поля — значения по умолчанию.
 type Config struct {
-	Delay      time.Duration // пауза между видео (1 с)
-	Jitter     time.Duration // плюс случайно до (1 с)
-	Cooldown   time.Duration // первая пауза после блокировки (60 с), дальше вдвое
-	MaxBlocks  int           // блокировок подряд до остановки (3)
-	BlockPause time.Duration // пауза после остановки (30 мин)
-	FlushEvery int           // писать на диск каждые N видео (10)
-	StatePath  string        // файл предохранителя
-	Now        func() time.Time
-	Sleep      func(ctx context.Context, d time.Duration) error
-	After      func(d time.Duration) <-chan time.Time
+	Delay       time.Duration // пауза между видео (1 с)
+	Jitter      time.Duration // плюс случайно до (1 с)
+	Cooldown    time.Duration // первая пауза после блокировки (60 с), дальше вдвое
+	MaxBlocks   int           // блокировок подряд до остановки (3)
+	BlockPause  time.Duration // пауза после остановки (30 мин)
+	FlushEvery  int           // писать на диск каждые N видео (10)
+	NetPause    time.Duration // первая пауза без сети (10 с), дальше вдвое
+	MaxNetFails int           // сетевых сбоев подряд до остановки (5)
+	StatePath   string        // файл предохранителя
+	Now         func() time.Time
+	Sleep       func(ctx context.Context, d time.Duration) error
+	After       func(d time.Duration) <-chan time.Time
 }
 
 func (c *Config) defaults() {
@@ -97,6 +106,12 @@ func (c *Config) defaults() {
 	}
 	if c.FlushEvery == 0 {
 		c.FlushEvery = 10
+	}
+	if c.NetPause == 0 {
+		c.NetPause = 10 * time.Second
+	}
+	if c.MaxNetFails == 0 {
+		c.MaxNetFails = 5
 	}
 	if c.Now == nil {
 		c.Now = time.Now
@@ -397,13 +412,18 @@ func (ix *Indexer) saveBreakerLocked() {
 	}
 }
 
-func (ix *Indexer) finish(id string, state State, errText string) {
+// finish заканчивает задание; reason — причина для интерфейса (ReasonNetwork
+// у остановки без сети), обычно пустая.
+func (ix *Indexer) finish(id string, state State, errText string, reason ...string) {
 	if err := ix.lib.Flush(); err != nil {
 		log.Printf("запись библиотеки: %v", err)
 	}
 	ix.update(id, func(j *Job) {
 		j.State, j.Error, j.Current = state, errText, ""
-		j.CooldownUntil = time.Time{}
+		j.CooldownUntil, j.Reason = time.Time{}, ""
+		if len(reason) > 0 {
+			j.Reason = reason[0]
+		}
 		j.FinishedAt = ix.cfg.Now()
 	})
 }
@@ -433,6 +453,7 @@ func (ix *Indexer) run(ctx context.Context, id string) {
 	todo := ix.lib.Todo(id)
 	ix.update(id, func(j *Job) { j.State, j.Total = StateRunning, len(todo) })
 
+	netFails := 0 // сетевых сбоев подряд
 	for i := 0; i < len(todo); {
 		v := todo[i]
 		if err := ix.waitBreaker(ctx, id); err != nil {
@@ -448,6 +469,23 @@ func (ix *Indexer) run(ctx context.Context, id string) {
 			ix.finish(id, StateCancelled, "")
 			return
 		}
+		// Нет сети — с видео всё может быть в порядке: статус не пишем,
+		// ждём с растущей паузой и повторяем то же видео. После MaxNetFails
+		// подряд задание останавливается, видео остаются не скачанными.
+		if errors.Is(err, transcript.ErrNetwork) {
+			netFails++
+			if netFails >= ix.cfg.MaxNetFails {
+				ix.finish(id, StateFailed, err.Error(), ReasonNetwork)
+				return
+			}
+			if err := ix.pause(ctx, id, ReasonNetwork, ix.cfg.NetPause<<(netFails-1)); err != nil {
+				ix.finish(id, StateCancelled, "")
+				return
+			}
+			continue
+		}
+		netFails = 0
+
 		status := classify(err)
 		errText := ""
 		if err != nil {
@@ -511,17 +549,23 @@ func (ix *Indexer) list(ctx context.Context, id string, limit int) error {
 	return ix.lib.Merge(id, videos)
 }
 
-// waitBreaker ждёт конца общей паузы, показывая её в задании.
+// waitBreaker ждёт конца общей паузы после блокировки.
 func (ix *Indexer) waitBreaker(ctx context.Context, id string) error {
 	until := ix.BlockedUntil()
 	if until.IsZero() {
 		return nil
 	}
-	ix.update(id, func(j *Job) { j.State, j.CooldownUntil = StateCooling, until })
-	if err := ix.cfg.Sleep(ctx, until.Sub(ix.cfg.Now())); err != nil {
+	return ix.pause(ctx, id, ReasonBlocked, until.Sub(ix.cfg.Now()))
+}
+
+// pause — пауза задания с причиной и обратным отсчётом в интерфейсе.
+func (ix *Indexer) pause(ctx context.Context, id, reason string, d time.Duration) error {
+	until := ix.cfg.Now().Add(d)
+	ix.update(id, func(j *Job) { j.State, j.Reason, j.CooldownUntil = StateCooling, reason, until })
+	if err := ix.cfg.Sleep(ctx, d); err != nil {
 		return err
 	}
-	ix.update(id, func(j *Job) { j.State, j.CooldownUntil = StateRunning, time.Time{} })
+	ix.update(id, func(j *Job) { j.State, j.Reason, j.CooldownUntil = StateRunning, "", time.Time{} })
 	return nil
 }
 

@@ -358,3 +358,43 @@ func TestResumeChannelNeverListed(t *testing.T) {
 		t.Fatalf("задание: %+v", j)
 	}
 }
+
+func TestNetworkOutageKeepsVideosPending(t *testing.T) {
+	c := newClock()
+	netErr := fmt.Errorf("%w: dial tcp: no route to host", transcript.ErrNetwork)
+	errs := make([]error, 10)
+	for i := range errs {
+		errs[i] = netErr
+	}
+	ix, lib, _ := setup(t, &fakeLister{n: 5}, &fakeFetcher{errs: errs}, c)
+	ix.Enqueue("A", 10, false)
+	runUntil(t, ix, "A")
+
+	j := ix.Jobs()["A"]
+	if j.State != StateFailed || j.Reason != ReasonNetwork || j.Failed != 0 || j.Done != 0 {
+		t.Fatalf("задание: %+v", j)
+	}
+	s, _ := lib.Summary("A")
+	if s.Counts.Pending != 5 || !s.IndexedAt.IsZero() {
+		t.Errorf("видео испорчены сбоем сети: %+v, indexedAt %v", s.Counts, s.IndexedAt)
+	}
+	// Паузы растут: 10, 20, 40, 80 с, после пятого сбоя — остановка.
+	if fmt.Sprint(c.sleeps) != "[10s 20s 40s 1m20s]" {
+		t.Errorf("паузы: %v", c.sleeps)
+	}
+}
+
+func TestNetworkBlipRecovers(t *testing.T) {
+	c := newClock()
+	netErr := fmt.Errorf("%w: timeout", transcript.ErrNetwork)
+	f := &fakeFetcher{errs: []error{nil, netErr, nil}}
+	ix, lib, _ := setup(t, &fakeLister{n: 2}, f, c)
+	ix.Enqueue("A", 10, false)
+	runUntil(t, ix, "A")
+	if j := ix.Jobs()["A"]; j.State != StateDone || j.OK != 2 || j.Failed != 0 {
+		t.Fatalf("задание: %+v", j)
+	}
+	if s, _ := lib.Summary("A"); s.Counts.OK != 2 {
+		t.Errorf("сводка: %+v", s.Counts)
+	}
+}

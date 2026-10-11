@@ -83,12 +83,12 @@ func (y *YtDlp) Fetch(ctx context.Context, videoID string) (*Transcript, error) 
 	}
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return nil, redact(err)
+		return nil, transportError(err)
 	}
 	defer resp.Body.Close()
 	var body bytes.Buffer
 	if _, err := body.ReadFrom(resp.Body); err != nil {
-		return nil, redact(err)
+		return nil, transportError(err)
 	}
 	switch {
 	case resp.StatusCode == http.StatusTooManyRequests:
@@ -183,8 +183,9 @@ func ytdlpError(stderr string, err error) error {
 }
 
 // Fallback — основной загрузчик, а при сбое формата или протокола — запасной.
-// Блокировку адреса запасной не лечит (тот же адрес, только больше запросов),
-// поэтому при ErrBlocked и окончательных ответах он не зовётся.
+// Блокировку адреса и отсутствие сети запасной не лечит (тот же адрес и та
+// же сеть, только больше запросов), поэтому при ErrBlocked, ErrNetwork и
+// окончательных ответах он не зовётся.
 type Fallback struct {
 	Primary, Secondary interface {
 		Fetch(ctx context.Context, videoID string) (*Transcript, error)
@@ -194,7 +195,7 @@ type Fallback struct {
 // Fetch — см. Fallback.
 func (f Fallback) Fetch(ctx context.Context, videoID string) (*Transcript, error) {
 	t, err := f.Primary.Fetch(ctx, videoID)
-	if err == nil || isFinal(err) || ctx.Err() != nil {
+	if err == nil || isFinal(err) || errors.Is(err, ErrNetwork) || ctx.Err() != nil {
 		return t, err
 	}
 	t2, err2 := f.Secondary.Fetch(ctx, videoID)

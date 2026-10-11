@@ -22,6 +22,7 @@ export interface Job {
   failed: number;
   current?: string;
   cooldownUntil?: string;
+  reason?: 'blocked' | 'network';
   error?: string;
   startedAt?: string;
   finishedAt?: string;

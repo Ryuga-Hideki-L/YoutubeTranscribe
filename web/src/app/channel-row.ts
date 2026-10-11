@@ -98,7 +98,13 @@ const STATE_LABEL: Record<string, string> = {
         }
       </p>
       @if (j?.state === 'cooling') {
-        <p class="current warn">YouTube притормозил запросы — продолжим через {{ remaining() }}</p>
+        <p class="current warn">
+          @if (j?.reason === 'network') {
+            Нет связи с YouTube — повторим через {{ remaining() }}
+          } @else {
+            YouTube притормозил запросы — продолжим через {{ remaining() }}
+          }
+        </p>
       } @else if (j?.current) {
         <p class="current" [title]="j?.current">{{ j?.current }}</p>
       }
@@ -120,7 +126,14 @@ const STATE_LABEL: Record<string, string> = {
     } @else if (j?.state === 'failed') {
       <div class="notice error">
         <svg appIcon name="triangle-alert" [size]="16"></svg>
-        <p>{{ j?.error }}</p>
+        <div>
+          @if (j?.reason === 'network') {
+            <p>Нет связи с YouTube — индексация остановлена, нескачанные видео остались в очереди. Проверьте сеть и нажмите «Докачать».</p>
+            <p class="hint">{{ j?.error }}</p>
+          } @else {
+            <p>{{ j?.error }}</p>
+          }
+        </div>
       </div>
     } @else if (!active() && c.counts.failed > 0) {
       <p class="current warn">{{ failedLine() }}</p>

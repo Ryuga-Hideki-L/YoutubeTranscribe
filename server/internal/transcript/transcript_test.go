@@ -257,4 +257,13 @@ func TestRedactHidesQuery(t *testing.T) {
 	if err == nil || strings.Contains(err.Error(), "SECRET") {
 		t.Fatalf("ключ попал в текст ошибки: %v", err)
 	}
+	if !errors.Is(err, ErrNetwork) {
+		t.Errorf("отказ соединения — не ErrNetwork: %v", err)
+	}
+	// Отмена извне — не «нет сети».
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := c.Fetch(ctx, "abc"); errors.Is(err, ErrNetwork) || !errors.Is(err, context.Canceled) {
+		t.Errorf("отмена: %v", err)
+	}
 }
