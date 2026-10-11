@@ -1,5 +1,5 @@
 import { NgTemplateOutlet } from '@angular/common';
-import { ChangeDetectionStrategy, Component, computed, inject, linkedSignal, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, effect, inject, signal, untracked } from '@angular/core';
 import { AddChannel } from './add-channel';
 import { Api } from './api';
 import { ChannelRow, Clock } from './channel-row';
@@ -368,9 +368,10 @@ export class App {
   private readonly now = inject(Clock).now;
 
   protected readonly adding = signal(false);
-  // На узком экране каналы раскрыты, пока идёт индексация; дальше — как
-  // решил человек.
-  protected readonly railOpen = linkedSignal(() => this.api.indexing());
+  // На узком экране каналы раскрываются, когда индексация начинается;
+  // когда кончается — остаются как оставил человек (иначе список
+  // сворачивался бы прямо под пальцем).
+  protected readonly railOpen = signal(false);
 
   protected readonly themeIcon = computed(() => THEME_ICON[this.theme.preference()]);
   protected readonly themeTitle = computed(() => THEME_TITLE[this.theme.preference()]);
@@ -382,6 +383,15 @@ export class App {
     const shown = this.api.channels().some((c) => c.job?.state === 'cooling' || c.job?.state === 'blocked');
     return shown ? '' : clock(until);
   });
+
+  constructor() {
+    let wasIndexing = false;
+    effect(() => {
+      const indexing = this.api.indexing();
+      if (indexing && !wasIndexing) untracked(() => this.railOpen.set(true));
+      wasIndexing = indexing;
+    });
+  }
 
   protected cycleTheme(e: MouseEvent) {
     this.theme.setPreference(THEME_NEXT[this.theme.preference()], e.currentTarget as HTMLElement);
