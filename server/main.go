@@ -77,6 +77,7 @@ func main() {
 		defer close(workerDone)
 		ix.Run(ctx)
 	}()
+	go ix.CheckNetwork(ctx)
 	ix.ResumePending()
 
 	// ListenAndServe возвращается сразу после Shutdown, а сам Shutdown ещё

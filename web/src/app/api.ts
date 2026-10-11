@@ -57,6 +57,7 @@ export interface LibraryState {
   hasKey: boolean;
   defaultLimit: number;
   blockedUntil?: string;
+  restricted?: boolean;
   channels: ChannelView[];
 }
 

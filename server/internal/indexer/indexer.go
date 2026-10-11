@@ -142,6 +142,9 @@ type Indexer struct {
 	br      breaker
 	subs    map[chan struct{}]struct{}
 	wake    chan struct{}
+
+	restricted   bool                           // DNS сети включает Restricted Mode
+	checkNetwork func(ctx context.Context) bool // по умолчанию transcript.RestrictedMode
 }
 
 // New создаёт индексатор и читает предохранитель с диска.
@@ -154,6 +157,9 @@ func New(lib *library.Library, yt Lister, tr Fetcher, cfg Config) *Indexer {
 		subs:   map[chan struct{}]struct{}{},
 		wake:   make(chan struct{}, 1),
 		br:     breaker{Version: 1},
+		checkNetwork: func(ctx context.Context) bool {
+			return transcript.RestrictedMode(ctx, nil)
+		},
 	}
 	if cfg.StatePath != "" {
 		if raw, err := os.ReadFile(cfg.StatePath); err == nil {
@@ -272,6 +278,31 @@ func (ix *Indexer) BlockedUntil() time.Time {
 	return time.Time{}
 }
 
+// Restricted — DNS сети подменяет YouTube на Restricted Mode (по последней проверке).
+func (ix *Indexer) Restricted() bool {
+	ix.mu.Lock()
+	defer ix.mu.Unlock()
+	return ix.restricted
+}
+
+// CheckNetwork перепроверяет DNS: при запуске и перед каждым заданием —
+// сеть могла смениться.
+func (ix *Indexer) CheckNetwork(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	restricted := ix.checkNetwork(ctx)
+	ix.mu.Lock()
+	changed := ix.restricted != restricted
+	ix.restricted = restricted
+	ix.mu.Unlock()
+	if changed {
+		if restricted {
+			log.Print("DNS сети включает Restricted Mode YouTube: часть видео будет недоступна")
+		}
+		ix.notify()
+	}
+}
+
 // Subscribe — сигнал «что-то поменялось». Канал с буфером 1: частые
 // изменения сливаются, подписчик берёт свежий снимок сам.
 func (ix *Indexer) Subscribe() (<-chan struct{}, func()) {
@@ -338,6 +369,7 @@ func (ix *Indexer) run(ctx context.Context, id string) {
 	ix.update(id, func(j *Job) {
 		*j = Job{ChannelID: id, State: StateListing, StartedAt: ix.cfg.Now()}
 	})
+	ix.CheckNetwork(ctx)
 
 	if err := ix.list(ctx, id, limit); err != nil {
 		if ctx.Err() != nil {

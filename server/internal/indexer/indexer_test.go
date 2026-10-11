@@ -110,6 +110,7 @@ func setup(t *testing.T, l Lister, f Fetcher, c *clock) (*Indexer, *library.Libr
 	}
 	statePath := filepath.Join(dir, "state.json")
 	ix := New(lib, l, f, Config{StatePath: statePath, Now: c.Now, Sleep: c.Sleep})
+	ix.checkNetwork = func(context.Context) bool { return false } // тесты без сети
 	return ix, lib, statePath
 }
 
@@ -212,6 +213,7 @@ func TestStopsAfterRepeatedBlocksAndRemembers(t *testing.T) {
 	}
 	// Перезапуск: новый индексатор читает предохранитель с диска.
 	again := New(lib, &fakeLister{n: 3}, f, Config{StatePath: statePath, Now: c.Now, Sleep: c.Sleep})
+	again.checkNetwork = ix.checkNetwork
 	until := again.BlockedUntil()
 	if want := c.Now().Add(30 * time.Minute); !until.Equal(want) {
 		t.Errorf("предохранитель после перезапуска: %v, want %v", until, want)
@@ -267,5 +269,19 @@ func TestListingFailure(t *testing.T) {
 	runUntil(t, ix, "A")
 	if j := ix.Jobs()["A"]; j.State != StateFailed || j.Error != youtube.ErrNoKey.Error() {
 		t.Fatalf("задание: %+v", j)
+	}
+}
+
+func TestRestrictedModeIsReported(t *testing.T) {
+	c := newClock()
+	ix, _, _ := setup(t, &fakeLister{n: 1}, &fakeFetcher{}, c)
+	changed, unsubscribe := ix.Subscribe()
+	defer unsubscribe()
+	ix.checkNetwork = func(context.Context) bool { return true }
+	ix.Enqueue("A", 10, false)
+	<-changed
+	runUntil(t, ix, "A")
+	if !ix.Restricted() {
+		t.Error("Restricted Mode не замечен перед заданием")
 	}
 }

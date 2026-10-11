@@ -106,6 +106,7 @@ type State struct {
 	HasKey       bool          `json:"hasKey"`
 	DefaultLimit int           `json:"defaultLimit"`
 	BlockedUntil time.Time     `json:"blockedUntil,omitzero"`
+	Restricted   bool          `json:"restricted,omitempty"` // DNS включает Restricted Mode YouTube
 	Channels     []ChannelView `json:"channels"`
 }
 
@@ -115,6 +116,7 @@ func (s *Server) snapshot() State {
 		HasKey:       s.yt.HasKey(),
 		DefaultLimit: s.defaultLimit,
 		BlockedUntil: s.ix.BlockedUntil(),
+		Restricted:   s.ix.Restricted(),
 		Channels:     []ChannelView{},
 	}
 	for _, sum := range s.lib.Summaries() {

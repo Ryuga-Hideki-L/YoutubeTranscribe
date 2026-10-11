@@ -42,3 +42,7 @@ func TestLive(t *testing.T) {
 		}
 	}
 }
+
+func TestLiveRestrictedMode(t *testing.T) {
+	t.Logf("Restricted Mode в DNS этой сети: %v", RestrictedMode(context.Background(), nil))
+}
