@@ -42,9 +42,25 @@ const (
 	StatusError       Status = "error"        // прочая ошибка
 )
 
-// Final — повторять бесполезно: результат не изменится.
+// Final — повторять бесполезно: результат не изменится. Для no_captions
+// у свежих видео есть исключение — см. needsFetch.
 func (s Status) Final() bool {
 	return s == StatusOK || s == StatusNoCaptions || s == StatusAge
+}
+
+// Автоматические субтитры YouTube делает не сразу после публикации или
+// конца трансляции. Поэтому «нет субтитров» у видео моложе недели ещё не
+// окончательно: такое видео перепроверяется, но не чаще раза в 6 часов.
+const (
+	freshWindow  = 7 * 24 * time.Hour
+	recheckAfter = 6 * time.Hour
+)
+
+func needsFetch(v *Video, now time.Time) bool {
+	if v.Status == StatusNoCaptions && now.Sub(v.Published) < freshWindow {
+		return now.Sub(v.LastTry) >= recheckAfter
+	}
+	return !v.Status.Final()
 }
 
 // Video — видео канала и его субтитры.
@@ -100,6 +116,7 @@ type Library struct {
 	dirty    map[string]bool
 
 	index atomic.Pointer[index]  // неизменяемый снимок для поиска
+	now   func() time.Time       // часы; в тестах подменяются
 	cache map[*Video]*videoIndex // разобранные видео, чтобы не строить заново
 }
 
@@ -113,6 +130,7 @@ func Open(dir string) (*Library, error) {
 		channels: map[string]*Channel{},
 		dirty:    map[string]bool{},
 		cache:    map[*Video]*videoIndex{},
+		now:      time.Now,
 	}
 	if err := os.MkdirAll(l.dir, 0o755); err != nil {
 		return nil, err
@@ -209,7 +227,7 @@ func (l *Library) Put(c youtube.Channel, limit int) error {
 	defer l.mu.Unlock()
 	ch, ok := l.channels[c.ID]
 	if !ok {
-		ch = &Channel{Version: Version, AddedAt: time.Now()}
+		ch = &Channel{Version: Version, AddedAt: l.now()}
 		l.channels[c.ID] = ch
 	}
 	ch.Channel = c
@@ -283,8 +301,9 @@ func (l *Library) Todo(id string) []Video {
 		return nil
 	}
 	var out []Video
+	now := l.now()
 	for _, v := range ch.Videos {
-		if !v.Status.Final() {
+		if needsFetch(v, now) {
 			out = append(out, Video{ID: v.ID, Title: v.Title, Published: v.Published})
 		}
 	}
@@ -308,7 +327,7 @@ func (l *Library) SetResult(channelID, videoID string, status Status, t *transcr
 	// Запись заменяется новой, а не правится на месте: снимок поиска
 	// держит старый указатель и читает его без блокировки.
 	v := *ch.Videos[i]
-	v.Status, v.Error, v.LastTry = status, errText, time.Now()
+	v.Status, v.Error, v.LastTry = status, errText, l.now()
 	v.Attempts++
 	if t != nil {
 		v.Lang, v.Auto, v.Lines = t.Lang, t.Auto, t.Lines
@@ -325,7 +344,7 @@ func (l *Library) MarkIndexed(id string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if ch, ok := l.channels[id]; ok {
-		ch.IndexedAt = time.Now()
+		ch.IndexedAt = l.now()
 		l.dirty[id] = true
 	}
 }

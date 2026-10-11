@@ -287,3 +287,32 @@ func TestLongRunOfMatchesIsSplit(t *testing.T) {
 		t.Errorf("20 строк подряд склеились в %d совпадений", v.Total)
 	}
 }
+
+func TestFreshVideoWithoutCaptionsIsRechecked(t *testing.T) {
+	l, _ := newLib(t)
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	l.now = func() time.Time { return now }
+	// v3 опубликовано 3 октября (6,5 дня назад), v1 — 1 октября (8,5 дня).
+	l.SetResult(bbc.ID, "v3", StatusNoCaptions, nil, "")
+	l.SetResult(bbc.ID, "v1", StatusNoCaptions, nil, "")
+	l.SetResult(bbc.ID, "v2", StatusOK, lines("текст"), "")
+
+	todo := func() string {
+		var ids []string
+		for _, v := range l.Todo(bbc.ID) {
+			ids = append(ids, v.ID)
+		}
+		return strings.Join(ids, " ")
+	}
+	if got := todo(); got != "" {
+		t.Errorf("сразу после проверки: %q, ждали пусто", got)
+	}
+	now = now.Add(7 * time.Hour)
+	if got := todo(); got != "v3" {
+		t.Errorf("через 7 часов: %q, ждали v3 (свежее), без v1 (старое)", got)
+	}
+	now = now.Add(7 * 24 * time.Hour)
+	if got := todo(); got != "" {
+		t.Errorf("через неделю: %q — свежесть прошла, ждали пусто", got)
+	}
+}
