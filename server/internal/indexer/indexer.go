@@ -76,6 +76,7 @@ type Config struct {
 	StatePath  string        // файл предохранителя
 	Now        func() time.Time
 	Sleep      func(ctx context.Context, d time.Duration) error
+	After      func(d time.Duration) <-chan time.Time
 }
 
 func (c *Config) defaults() {
@@ -102,6 +103,9 @@ func (c *Config) defaults() {
 	}
 	if c.Sleep == nil {
 		c.Sleep = sleep
+	}
+	if c.After == nil {
+		c.After = time.After
 	}
 }
 
@@ -200,12 +204,50 @@ func (ix *Indexer) next(ctx context.Context) (string, context.Context, bool) {
 			ix.mu.Unlock()
 			return id, jobCtx, true
 		}
+		// Задания, остановленные блокировкой, встают в очередь сами, когда
+		// кончится пауза. Таймер — только пока такие есть.
+		var retry <-chan time.Time
+		if ix.hasBlockedLocked() {
+			retry = ix.cfg.After(ix.br.BlockedUntil.Sub(ix.cfg.Now()))
+		}
 		ix.mu.Unlock()
 		select {
 		case <-ix.wake:
+		case <-retry:
+			ix.requeueBlocked()
 		case <-ctx.Done():
 			return "", nil, false
 		}
+	}
+}
+
+func (ix *Indexer) hasBlockedLocked() bool {
+	for _, j := range ix.jobs {
+		if j.State == StateBlocked {
+			return true
+		}
+	}
+	return false
+}
+
+// requeueBlocked ставит в очередь задания, остановленные блокировкой.
+func (ix *Indexer) requeueBlocked() {
+	ix.mu.Lock()
+	var ids []string
+	for id, j := range ix.jobs {
+		if j.State == StateBlocked {
+			ids = append(ids, id)
+		}
+	}
+	slices.Sort(ids)
+	for _, id := range ids {
+		ix.queue = append(ix.queue, id)
+		ix.jobs[id].State = StateQueued
+	}
+	ix.mu.Unlock()
+	if len(ids) > 0 {
+		log.Printf("пауза после блокировки кончилась — снова в очереди: %v", ids)
+		ix.notify()
 	}
 }
 
@@ -239,6 +281,10 @@ func (ix *Indexer) Cancel(id string) {
 	if i := slices.Index(ix.queue, id); i >= 0 {
 		ix.queue = slices.Delete(ix.queue, i, i+1)
 		ix.jobs[id].State = StateCancelled
+	}
+	// Остановленное блокировкой не встанет в очередь само.
+	if j, ok := ix.jobs[id]; ok && j.State == StateBlocked {
+		j.State = StateCancelled
 	}
 	if ix.running == id {
 		ix.cancel()
@@ -522,11 +568,12 @@ func classify(err error) library.Status {
 	return library.StatusError
 }
 
-// ResumePending ставит в очередь каналы, где остались ни разу не скачанные
-// видео: индексацию прервал перезапуск.
+// ResumePending ставит в очередь каналы, индексацию которых прервал
+// перезапуск: остались ни разу не скачанные видео или канал добавлен, но
+// ещё ни разу не проиндексирован (список видео не получен).
 func (ix *Indexer) ResumePending() {
 	for _, s := range ix.lib.Summaries() {
-		if s.Counts.Pending > 0 {
+		if s.Counts.Pending > 0 || s.IndexedAt.IsZero() {
 			ix.Enqueue(s.ID, s.Limit, false)
 		}
 	}

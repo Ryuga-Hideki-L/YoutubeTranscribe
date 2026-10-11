@@ -80,6 +80,7 @@ type clock struct {
 	now    time.Time
 	sleeps []time.Duration
 	block  chan struct{} // если не nil — Sleep ждёт отмены
+	fire   bool          // After срабатывает сразу
 }
 
 func newClock() *clock { return &clock{now: time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC)} }
@@ -88,6 +89,20 @@ func (c *clock) Now() time.Time {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.now
+}
+
+// After по умолчанию не срабатывает никогда; fire — сработать сразу,
+// сдвинув время.
+func (c *clock) After(d time.Duration) <-chan time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.fire {
+		return nil
+	}
+	c.now = c.now.Add(d)
+	ch := make(chan time.Time, 1)
+	ch <- c.now
+	return ch
 }
 
 func (c *clock) Sleep(ctx context.Context, d time.Duration) error {
@@ -109,7 +124,7 @@ func setup(t *testing.T, l Lister, f Fetcher, c *clock) (*Indexer, *library.Libr
 		t.Fatal(err)
 	}
 	statePath := filepath.Join(dir, "state.json")
-	ix := New(lib, l, f, Config{StatePath: statePath, Now: c.Now, Sleep: c.Sleep})
+	ix := New(lib, l, f, Config{StatePath: statePath, Now: c.Now, Sleep: c.Sleep, After: c.After})
 	ix.checkNetwork = func(context.Context) bool { return false } // тесты без сети
 	return ix, lib, statePath
 }
@@ -283,5 +298,63 @@ func TestRestrictedModeIsReported(t *testing.T) {
 	runUntil(t, ix, "A")
 	if !ix.Restricted() {
 		t.Error("Restricted Mode не замечен перед заданием")
+	}
+}
+
+func TestBlockedJobRetriesAfterPause(t *testing.T) {
+	c := newClock()
+	b := transcript.ErrBlocked
+	f := &fakeFetcher{errs: []error{b, b, b}}
+	ix, lib, _ := setup(t, &fakeLister{n: 2}, f, c)
+	ix.Enqueue("A", 10, false)
+	runUntil(t, ix, "A")
+	if j := ix.Jobs()["A"]; j.State != StateBlocked {
+		t.Fatalf("задание: %+v", j)
+	}
+	// Пауза кончилась — задание встаёт само и доделывает видео.
+	c.mu.Lock()
+	c.fire = true
+	c.mu.Unlock()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go ix.Run(ctx)
+	deadline := time.After(5 * time.Second)
+	for ix.Jobs()["A"].State != StateDone {
+		select {
+		case <-deadline:
+			t.Fatalf("задание не возобновилось: %+v", ix.Jobs()["A"])
+		case <-time.After(time.Millisecond):
+		}
+	}
+	if s, _ := lib.Summary("A"); s.Counts.OK != 2 {
+		t.Errorf("после возобновления: %+v", s.Counts)
+	}
+}
+
+func TestCancelledBlockedJobStaysCancelled(t *testing.T) {
+	c := newClock()
+	b := transcript.ErrBlocked
+	ix, _, _ := setup(t, &fakeLister{n: 1}, &fakeFetcher{errs: []error{b, b, b}}, c)
+	ix.Enqueue("A", 10, false)
+	runUntil(t, ix, "A")
+	ix.Cancel("A")
+	ix.mu.Lock()
+	has := ix.hasBlockedLocked()
+	ix.mu.Unlock()
+	if has || ix.Jobs()["A"].State != StateCancelled {
+		t.Fatalf("отменённое заблокированное задание: %+v", ix.Jobs()["A"])
+	}
+}
+
+func TestResumeChannelNeverListed(t *testing.T) {
+	c := newClock()
+	f := &fakeFetcher{}
+	ix, lib, _ := setup(t, &fakeLister{n: 2}, f, c)
+	// Канал добавлен (Put), но список видео не получен — как перед перезапуском.
+	lib.Put(youtube.Channel{ID: "B", Title: "B", Uploads: "UUB"}, 10)
+	ix.ResumePending()
+	runUntil(t, ix, "B")
+	if j := ix.Jobs()["B"]; j.State != StateDone || j.OK != 2 {
+		t.Fatalf("задание: %+v", j)
 	}
 }

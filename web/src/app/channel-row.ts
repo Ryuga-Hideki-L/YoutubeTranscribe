@@ -111,7 +111,7 @@ const STATE_LABEL: Record<string, string> = {
           <p>
             YouTube заблокировал запросы с этого адреса.
             @if (blockedUntil(); as until) {
-              Сами попробуем снова в {{ until }}.
+              Сами попробуем снова после {{ until }}.
             }
           </p>
           <p class="hint">Можно подождать, сменить сеть или запустить сервер с <code>HTTPS_PROXY</code>.</p>
@@ -138,6 +138,9 @@ const STATE_LABEL: Record<string, string> = {
       } @else if (j?.state === 'blocked') {
         <button class="btn" type="button" (click)="act(api.refresh(c.id, true))">
           <svg appIcon name="refresh-cw" [size]="14"></svg> Повторить сейчас
+        </button>
+        <button class="btn quiet" type="button" (click)="act(api.cancel(c.id))" title="Не повторять самим после паузы">
+          Отменить
         </button>
       } @else {
         <button class="btn quiet" type="button" (click)="act(api.refresh(c.id))"
