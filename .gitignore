@@ -1,0 +1,4 @@
+# Рабочие файлы — только локально
+logs.txt
+cache.json
+node_modules/
