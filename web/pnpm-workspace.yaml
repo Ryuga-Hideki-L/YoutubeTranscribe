@@ -1,0 +1,9 @@
+# pnpm 11 не запускает сборочные скрипты зависимостей, пока они не перечислены
+# здесь (strictDepBuilds). Этим пакетам скрипты не нужны: у всех есть готовые
+# бинарники для платформы, поэтому они явно запрещены — установка с нуля не
+# останавливается на ERR_PNPM_IGNORED_BUILDS.
+allowBuilds:
+  "@parcel/watcher": false
+  esbuild: false
+  lmdb: false
+  msgpackr-extract: false

@@ -1,0 +1,321 @@
+@import "./fonts.css";
+
+/*
+ * Токены. Цвета — только отсюда, в компонентах — var(--…).
+ * Тёмная тема без светлых плашек: акцентные блоки — тёмный оттенок цвета
+ * (HSL-яркость 20–30 %) с рамкой, текст на них остаётся светлым.
+ * Контраст посчитан по WCAG относительно --surface.
+ */
+:root {
+  color-scheme: light;
+  --bg: #f7f3e9;
+  --surface: #fffdf6;
+  --surface-raised: #f3eee2;
+  --text: #1d1d1b;
+  --text-muted: #5c5b57;
+  --text-subtle: #75736d;
+  --line: rgba(29, 29, 27, 0.14);
+  --line-strong: rgba(29, 29, 27, 0.26);
+  --accent: #ff5f57;
+  --accent-text: #c9302a;
+  --accent-block: #fde4e0;
+  --accent-block-edge: rgba(201, 48, 42, 0.32);
+  --primary-bg: #1d1d1b;
+  --primary-text: #f7f3e9;
+  --primary-edge: #1d1d1b;
+  --mark-bg: #ffe9a3;
+  --mark-text: #1d1d1b;
+  --ok: #176b43;
+  --warn: #8a5a00;
+  --warn-block: #fbf0d0;
+  --warn-block-edge: rgba(138, 90, 0, 0.3);
+  --danger: #c9302a;
+  --chip-bg: #eee9dc;
+  --chip-edge: rgba(29, 29, 27, 0.12);
+  --focus: #1d1d1b;
+  --shadow: 0 1px 2px rgba(29, 29, 27, 0.06), 0 8px 24px rgba(29, 29, 27, 0.08);
+  --scrim: rgba(29, 29, 27, 0.4);
+
+  --font: "Manrope", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, monospace;
+  --radius-s: 8px;
+  --radius-m: 12px;
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --rail: 300px;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #1b1916;
+  --surface: #23201c;
+  --surface-raised: #2a2622;
+  --text: #f3eee2;
+  --text-muted: rgba(243, 238, 226, 0.7);
+  --text-subtle: rgba(243, 238, 226, 0.55);
+  --line: rgba(243, 238, 226, 0.12);
+  --line-strong: rgba(243, 238, 226, 0.22);
+  --accent: #ff6a61;
+  --accent-text: #ff8d85;
+  --accent-block: #5a2a26;
+  --accent-block-edge: rgba(255, 106, 97, 0.45);
+  --primary-bg: #5a2a26;
+  --primary-text: #f3eee2;
+  --primary-edge: rgba(255, 106, 97, 0.45);
+  --mark-bg: #4c411f;
+  --mark-text: #f3eee2;
+  --ok: #7fd6a0;
+  --warn: #f2c14e;
+  --warn-block: #3a3018;
+  --warn-block-edge: rgba(242, 193, 78, 0.4);
+  --danger: #ff8d85;
+  --chip-bg: rgba(243, 238, 226, 0.08);
+  --chip-edge: rgba(243, 238, 226, 0.16);
+  --focus: #f3eee2;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 12px 32px rgba(0, 0, 0, 0.35);
+  --scrim: rgba(0, 0, 0, 0.55);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 14px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3,
+p {
+  margin: 0;
+}
+
+img {
+  display: block;
+  max-width: 100%;
+}
+
+button,
+input,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: default;
+}
+
+a {
+  color: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+/* Без отступов по бокам: подсветка части слова не должна рвать его пробелом. */
+mark {
+  background: var(--mark-bg);
+  color: var(--mark-text);
+  border-radius: 3px;
+}
+
+/* Iframe плеера создаёт скрипт YouTube, а не шаблон Angular: стили
+   компонента до него не дотягиваются, поэтому правило здесь. */
+app-player .video > :first-child {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+
+/* Общие кнопки. */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 0 14px;
+  border-radius: var(--radius-s);
+  border: 1px solid var(--line-strong);
+  background: transparent;
+  font-weight: 600;
+  font-size: 13px;
+  white-space: nowrap;
+  transition:
+    background-color 160ms var(--ease),
+    border-color 160ms var(--ease),
+    opacity 160ms var(--ease);
+}
+
+.btn:hover:not(:disabled) {
+  background: var(--chip-bg);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+}
+
+.btn.primary {
+  background: var(--primary-bg);
+  border-color: var(--primary-edge);
+  color: var(--primary-text);
+}
+
+.btn.primary:hover:not(:disabled) {
+  background: var(--primary-bg);
+  filter: brightness(1.12);
+}
+
+.btn.icon {
+  width: 36px;
+  padding: 0;
+}
+
+.btn.quiet {
+  border-color: transparent;
+  color: var(--text-muted);
+}
+
+.btn.quiet:hover:not(:disabled) {
+  color: var(--text);
+}
+
+.btn.danger {
+  color: var(--danger);
+  border-color: var(--accent-block-edge);
+}
+
+/* Поле ввода. */
+.field {
+  width: 100%;
+  min-height: 40px;
+  padding: 0 12px;
+  border-radius: var(--radius-s);
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  outline: none;
+  transition: border-color 160ms var(--ease);
+}
+
+.field::placeholder {
+  color: var(--text-subtle);
+}
+
+.field:focus {
+  border-color: var(--text-muted);
+}
+
+/* Блоки-уведомления: тёмный оттенок цвета и рамка, не светлая плашка. */
+.notice {
+  display: flex;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: var(--radius-m);
+  border: 1px solid var(--warn-block-edge);
+  background: var(--warn-block);
+  font-size: 13px;
+}
+
+.notice svg {
+  flex: none;
+  margin-top: 1px;
+  color: var(--warn);
+}
+
+.notice.error {
+  border-color: var(--accent-block-edge);
+  background: var(--accent-block);
+}
+
+.notice.error svg {
+  color: var(--accent-text);
+}
+
+.notice code {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.mono {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.muted {
+  color: var(--text-muted);
+}
+
+.subtle {
+  color: var(--text-subtle);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* Проявление списков: одна CSS-анимация на элемент, задержка — через --i. */
+@keyframes appear {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+.appear {
+  animation: appear 320ms var(--ease) both;
+  animation-delay: calc(min(var(--i, 0), 8) * 30ms);
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+:root[data-motion="off"] *,
+:root[data-motion="off"] *::before,
+:root[data-motion="off"] *::after {
+  animation-duration: 0s !important;
+  animation-delay: 0s !important;
+  transition-duration: 0s !important;
+}
+
+/* Смена темы: круг раскрывает новую тему поверх старой без стандартного
+   перекрёстного проявления снимков (src/app/theme.service.ts). */
+:root.vt-theme::view-transition-old(root),
+:root.vt-theme::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}

@@ -6,5 +6,6 @@ node_modules/
 # Сборки
 bin/
 dist/
+.angular/
 server/internal/web/static/*
 !server/internal/web/static/.gitkeep
