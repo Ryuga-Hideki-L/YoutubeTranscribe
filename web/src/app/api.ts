@@ -100,7 +100,7 @@ export interface SearchResult {
   videos: VideoHits[];
 }
 
-// Ошибка API: code — для логики (no_key, quota, not_found…), message — человеку.
+// Ошибка API. code нужен коду (no_key, quota, not_found…), message показываем человеку.
 export class ApiError extends Error {
   constructor(
     readonly code: string,
@@ -112,12 +112,12 @@ export class ApiError extends Error {
 
 export const ACTIVE_STATES: JobState[] = ['queued', 'listing', 'running', 'cooling'];
 
-async function request<T>(method: string, url: string, body?: unknown, signal?: AbortSignal): Promise<T> {
-  let res: Response;
+async function request<T>(method: string, url: string, body?: unknown, abortSignal?: AbortSignal): Promise<T> {
+  let response: Response;
   try {
-    res = await fetch(url, {
+    response = await fetch(url, {
       method,
-      signal,
+      signal: abortSignal,
       headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
@@ -125,34 +125,36 @@ async function request<T>(method: string, url: string, body?: unknown, signal?: 
     if (err instanceof DOMException && err.name === 'AbortError') throw err;
     throw new ApiError('network', 'Нет связи с сервером');
   }
-  const data = await res.json().catch(() => null);
-  if (!res.ok) {
-    throw new ApiError(data?.code ?? 'http', data?.error ?? `Сервер ответил ${res.status}`);
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new ApiError(data?.code ?? 'http', data?.error ?? `Сервер ответил ${response.status}`);
   }
   return data as T;
 }
 
 // Связь с Go-сервером. Состояние библиотеки приходит потоком SSE
-// (/api/events): полный снимок при подключении и после каждого изменения.
-// EventSource сам переподключается, пока сервер недоступен — тогда
-// connected() = false и интерфейс это показывает.
+// (/api/events). Полный снимок приходит при подключении и после каждого
+// изменения. EventSource сам переподключается. Пока сервера нет,
+// connected() равен false, и интерфейс это показывает.
 @Injectable({ providedIn: 'root' })
 export class Api {
   readonly state = signal<LibraryState | null>(null);
   readonly connected = signal(true);
 
   readonly channels = computed(() => this.state()?.channels ?? []);
-  // Сколько строк субтитров уже можно искать — по изменению видно, что
+  // Сколько строк субтитров уже можно искать. Если число выросло,
   // результаты поиска устарели.
-  readonly searchableLines = computed(() => this.channels().reduce((n, c) => n + c.counts.lines, 0));
+  readonly searchableLines = computed(() =>
+    this.channels().reduce((sum, channel) => sum + channel.counts.lines, 0),
+  );
   readonly indexing = computed(() =>
-    this.channels().some((c) => c.job && ACTIVE_STATES.includes(c.job.state)),
+    this.channels().some((channel) => channel.job && ACTIVE_STATES.includes(channel.job.state)),
   );
 
   constructor() {
     const events = new EventSource('/api/events');
-    events.addEventListener('state', (e) => {
-      this.state.set(JSON.parse((e as MessageEvent<string>).data));
+    events.addEventListener('state', (event) => {
+      this.state.set(JSON.parse((event as MessageEvent<string>).data));
       this.connected.set(true);
     });
     events.addEventListener('error', () => this.connected.set(false));
@@ -179,9 +181,9 @@ export class Api {
     this.state.set(await request<LibraryState>('DELETE', `/api/channels/${encodeURIComponent(id)}`));
   }
 
-  search(q: string, channel: string, signal?: AbortSignal) {
-    const params = new URLSearchParams({ q });
-    if (channel) params.set('channel', channel);
-    return request<SearchResult>('GET', `/api/search?${params}`, undefined, signal);
+  search(query: string, channelId: string, abortSignal?: AbortSignal) {
+    const params = new URLSearchParams({ q: query });
+    if (channelId) params.set('channel', channelId);
+    return request<SearchResult>('GET', `/api/search?${params}`, undefined, abortSignal);
   }
 }

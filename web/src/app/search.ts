@@ -15,10 +15,10 @@ import { plural } from './format';
 import { Icon } from './icon';
 import { VideoGroup } from './video-group';
 
-// Строка поиска и результаты. Запрос живёт в адресе (?q=&channel=), чтобы
-// перезагрузка и ссылка открывали тот же поиск. Ввод ищет через 250 мс
-// после последней клавиши, Enter — сразу. Пока идёт новый поиск, старые
-// результаты остаются на месте.
+// Строка поиска и результаты. Запрос хранится в адресе (?q=&channel=),
+// чтобы перезагрузка и ссылка открывали тот же поиск. Поиск запускается
+// через 250 мс после последней клавиши, а Enter запускает его сразу.
+// Пока идёт новый поиск, старые результаты остаются на месте.
 @Component({
   selector: 'app-search',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -37,7 +37,7 @@ import { VideoGroup } from './video-group';
           autocomplete="off"
           [value]="query()"
           (input)="onInput($any($event.target).value)"
-          [disabled]="empty()"
+          [disabled]="libraryEmpty()"
         />
         @if (busy()) {
           <svg appIcon name="loader-circle" [size]="16" class="spin subtle"></svg>
@@ -49,36 +49,36 @@ import { VideoGroup } from './video-group';
         <label class="sr-only" for="scope">Где искать</label>
         <select id="scope" class="scope" [value]="scope()" (change)="setScope($any($event.target).value)">
           <option value="">Все каналы</option>
-          @for (c of channels(); track c.id) {
-            <option [value]="c.id">{{ c.title }}</option>
+          @for (channel of channels(); track channel.id) {
+            <option [value]="channel.id">{{ channel.title }}</option>
           }
         </select>
       }
     </div>
 
-    @if (error(); as e) {
+    @if (error(); as message) {
       <div class="notice error" role="alert">
         <svg appIcon name="triangle-alert" [size]="16"></svg>
-        <p>{{ e }}</p>
+        <p>{{ message }}</p>
       </div>
     }
 
-    @if (result(); as r) {
+    @if (result(); as searchResult) {
       <div class="summary" aria-live="polite">
-        @if (r.totalHits) {
+        @if (searchResult.totalHits) {
           <p>
             Найдено {{ hitsLine() }} в {{ videosLine() }}
-            @if (r.totalVideos > r.videos.length) {
-              <span class="subtle">· показаны {{ r.videos.length }} видео с наибольшим числом совпадений</span>
+            @if (searchResult.totalVideos > searchResult.videos.length) {
+              <span class="subtle">· показаны {{ searchResult.videos.length }} видео с наибольшим числом совпадений</span>
             }
           </p>
         } @else {
-          <p>Ничего не найдено по «{{ r.query }}»</p>
+          <p>Ничего не найдено по «{{ searchResult.query }}»</p>
           @if (scope()) {
             <button class="btn" type="button" (click)="setScope('')">Искать во всех каналах</button>
           }
-          @if (progress(); as p) {
-            <p class="subtle">Индексация ещё идёт — {{ p }}</p>
+          @if (progress(); as progressText) {
+            <p class="subtle">Индексация ещё идёт — {{ progressText }}</p>
           }
         }
         @if (stale()) {
@@ -88,11 +88,11 @@ import { VideoGroup } from './video-group';
         }
       </div>
       <div class="groups">
-        @for (v of r.videos; track v.id; let i = $index) {
-          <app-video-group class="appear" [style.--i]="i" [video]="v" />
+        @for (video of searchResult.videos; track video.id; let i = $index) {
+          <app-video-group class="appear" [style.--i]="i" [video]="video" />
         }
       </div>
-    } @else if (!empty() && !query()) {
+    } @else if (!libraryEmpty() && !query()) {
       <div class="hint">
         <svg appIcon name="captions" [size]="28"></svg>
         <p>Введите фразу — найдём, в каком видео и на какой минуте её сказали.</p>
@@ -205,13 +205,13 @@ export class Search {
   private readonly input = viewChild.required<ElementRef<HTMLInputElement>>('input');
 
   protected readonly channels = this.api.channels;
-  protected readonly empty = computed(() => this.channels().length === 0);
+  protected readonly libraryEmpty = computed(() => this.channels().length === 0);
   protected readonly query = signal('');
   protected readonly scope = signal('');
   protected readonly result = signal<SearchResult | null>(null);
   protected readonly error = signal<string | null>(null);
   protected readonly busy = signal(false);
-  // Сколько строк было в библиотеке на момент поиска: выросло — результат устарел.
+  // Сколько строк было в библиотеке на момент поиска. Если стало больше, результат устарел.
   private readonly linesAtSearch = signal(0);
   protected readonly stale = computed(
     () => this.result() !== null && this.api.searchableLines() > this.linesAtSearch(),
@@ -221,38 +221,39 @@ export class Search {
     plural(this.result()?.totalHits ?? 0, ['совпадение', 'совпадения', 'совпадений']),
   );
   protected readonly videosLine = computed(() => {
-    const n = this.result()?.totalVideos ?? 0;
-    return `${n.toLocaleString('ru')} видео`;
+    const count = this.result()?.totalVideos ?? 0;
+    return `${count.toLocaleString('ru')} видео`;
   });
   protected readonly progress = computed(() => {
-    const running = this.channels().find((c) => c.job && ACTIVE_STATES.includes(c.job.state));
+    const running = this.channels().find((channel) => channel.job && ACTIVE_STATES.includes(channel.job.state));
     return running?.job ? `${running.job.done} из ${running.job.total}` : '';
   });
 
-  private timer: ReturnType<typeof setTimeout> | undefined;
-  private inflight: AbortController | null = null;
+  private typingTimer: ReturnType<typeof setTimeout> | undefined;
+  private pendingRequest: AbortController | null = null;
 
   constructor() {
     const params = new URLSearchParams(location.search);
     this.query.set(params.get('q') ?? '');
     this.scope.set(params.get('channel') ?? '');
-    // Поиск из адреса — когда придёт состояние библиотеки: иначе счётчик
-    // строк на момент поиска был бы нулём и результат сразу «устарел».
-    const initial = effect(() => {
+    // Поиск из адреса запускаем, когда придёт состояние библиотеки. Иначе
+    // счётчик строк на момент поиска был бы нулём, и результат сразу
+    // считался бы устаревшим.
+    const initialSearch = effect(() => {
       if (!this.api.state()) return;
-      initial.destroy();
+      initialSearch.destroy();
       if (this.query().trim()) untracked(() => void this.runNow());
     });
     inject(DestroyRef).onDestroy(() => {
-      clearTimeout(this.timer);
-      this.inflight?.abort();
+      clearTimeout(this.typingTimer);
+      this.pendingRequest?.abort();
     });
   }
 
   protected onInput(value: string) {
     this.query.set(value);
-    clearTimeout(this.timer);
-    this.timer = setTimeout(() => this.runNow(), 250);
+    clearTimeout(this.typingTimer);
+    this.typingTimer = setTimeout(() => this.runNow(), 250);
   }
 
   protected setScope(id: string) {
@@ -260,51 +261,51 @@ export class Search {
     this.runNow();
   }
 
-  protected onKey(e: KeyboardEvent) {
-    const target = e.target as HTMLElement | null;
+  protected onKey(event: KeyboardEvent) {
+    const target = event.target as HTMLElement | null;
     const typing = target?.closest('input, textarea, select, [contenteditable]');
-    if (e.key === '/' && !typing && !e.ctrlKey && !e.metaKey && !e.altKey) {
-      e.preventDefault();
+    if (event.key === '/' && !typing && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      event.preventDefault();
       this.input().nativeElement.focus();
     }
   }
 
   protected async runNow() {
-    clearTimeout(this.timer);
-    const q = this.query().trim();
-    this.syncUrl(q);
-    this.inflight?.abort();
-    if (!q) {
+    clearTimeout(this.typingTimer);
+    const phrase = this.query().trim();
+    this.syncUrl(phrase);
+    this.pendingRequest?.abort();
+    if (!phrase) {
       this.result.set(null);
       this.error.set(null);
       this.busy.set(false);
       return;
     }
-    const ctrl = new AbortController();
-    this.inflight = ctrl;
-    // Индикатор — только если поиск дольше 300 мс: обычно он мгновенный.
-    const slow = setTimeout(() => this.busy.set(true), 300);
-    const lines = this.api.searchableLines();
+    const controller = new AbortController();
+    this.pendingRequest = controller;
+    // Индикатор показываем, только если поиск дольше 300 мс. Обычно он мгновенный.
+    const busyTimer = setTimeout(() => this.busy.set(true), 300);
+    const linesBefore = this.api.searchableLines();
     try {
-      const res = await this.api.search(q, this.scope(), ctrl.signal);
-      this.result.set(res);
-      this.linesAtSearch.set(lines);
+      const searchResult = await this.api.search(phrase, this.scope(), controller.signal);
+      this.result.set(searchResult);
+      this.linesAtSearch.set(linesBefore);
       this.error.set(null);
     } catch (err) {
-      if (ctrl.signal.aborted) return;
+      if (controller.signal.aborted) return;
       this.error.set(err instanceof ApiError ? err.message : 'Поиск не удался');
     } finally {
-      clearTimeout(slow);
-      if (this.inflight === ctrl) {
+      clearTimeout(busyTimer);
+      if (this.pendingRequest === controller) {
         this.busy.set(false);
-        this.inflight = null;
+        this.pendingRequest = null;
       }
     }
   }
 
-  private syncUrl(q: string) {
+  private syncUrl(phrase: string) {
     const params = new URLSearchParams();
-    if (q) params.set('q', q);
+    if (phrase) params.set('q', phrase);
     if (this.scope()) params.set('channel', this.scope());
     const next = params.size ? `?${params}` : location.pathname;
     history.replaceState(null, '', next);

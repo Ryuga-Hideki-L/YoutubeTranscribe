@@ -14,8 +14,8 @@ import { ACTIVE_STATES, Api, ApiError, ChannelView } from './api';
 import { clock, countdown, plural } from './format';
 import { Icon } from './icon';
 
-// Текущее время для обратных отсчётов. Тикает раз в секунду только пока
-// где-то идёт пауза после блокировки; в покое таймеров нет.
+// Текущее время для обратных отсчётов. Тикает раз в секунду, только пока
+// где-то идёт пауза после блокировки. В покое таймеров нет.
 @Injectable({ providedIn: 'root' })
 export class Clock {
   readonly now = signal(Date.now());
@@ -24,7 +24,7 @@ export class Clock {
     const api = inject(Api);
     let timer: ReturnType<typeof setInterval> | undefined;
     const cooling = computed(
-      () => !!api.state()?.blockedUntil || api.channels().some((c) => c.job?.state === 'cooling'),
+      () => !!api.state()?.blockedUntil || api.channels().some((channel) => channel.job?.state === 'cooling'),
     );
     effect(() => {
       if (cooling() && timer === undefined) {
@@ -55,26 +55,26 @@ const STATE_LABEL: Record<string, string> = {
   changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [Icon],
   template: `
-    @let c = channel();
-    @let j = c.job;
+    @let channelView = channel();
+    @let job = channelView.job;
     <div class="head">
-      @if (c.thumb) {
-        <img class="avatar" [src]="c.thumb" alt="" width="36" height="36" loading="lazy" referrerpolicy="no-referrer" />
+      @if (channelView.thumb) {
+        <img class="avatar" [src]="channelView.thumb" alt="" width="36" height="36" loading="lazy" referrerpolicy="no-referrer" />
       } @else {
         <span class="avatar empty"><svg appIcon name="captions" [size]="18"></svg></span>
       }
       <div class="names">
-        <p class="title" [title]="c.title">{{ c.title }}</p>
+        <p class="title" [title]="channelView.title">{{ channelView.title }}</p>
         <p class="sub">
-          @if (c.handle) {
-            <span class="mono">{{ c.handle }}</span> ·
+          @if (channelView.handle) {
+            <span class="mono">{{ channelView.handle }}</span> ·
           }
           {{ videosLine() }}
         </p>
       </div>
       @if (stateLabel(); as label) {
-        <span class="chip" [attr.data-state]="j?.state">
-          @if (j?.state === 'running' || j?.state === 'listing') {
+        <span class="chip" [attr.data-state]="job?.state">
+          @if (job?.state === 'running' || job?.state === 'listing') {
             <svg appIcon name="loader-circle" [size]="13" class="spin"></svg>
           }
           {{ label }}
@@ -83,38 +83,38 @@ const STATE_LABEL: Record<string, string> = {
     </div>
 
     @if (active()) {
-      <div class="progress" [class.paused]="j?.state === 'cooling'" role="progressbar"
-        [attr.aria-valuenow]="j?.done ?? 0" [attr.aria-valuemax]="j?.total ?? 0">
-        @if (j?.state === 'cooling') {
+      <div class="progress" [class.paused]="job?.state === 'cooling'" role="progressbar"
+        [attr.aria-valuenow]="job?.done ?? 0" [attr.aria-valuemax]="job?.total ?? 0">
+        @if (job?.state === 'cooling') {
           <!-- Отсчёт паузы: одна анимация ширины на всё время паузы. Новая
-               пауза (другой cooldownUntil) — новый элемент и новая анимация. -->
-          @for (p of pauses(); track p.until) {
-            <span class="bar countdown" [style.animation-duration.ms]="p.ms"></span>
+               пауза с другим cooldownUntil получает новый элемент и новую анимацию. -->
+          @for (pause of pauses(); track pause.until) {
+            <span class="bar countdown" [style.animation-duration.ms]="pause.ms"></span>
           }
         } @else {
           <span class="bar" [style.width.%]="percent()"></span>
         }
       </div>
       <p class="numbers mono">
-        {{ j?.done ?? 0 }} из {{ j?.total ?? 0 }} · с субтитрами {{ j?.ok ?? 0 }} · без {{ j?.noCaptions ?? 0 }}
-        @if (j?.failed) {
-          · ошибки {{ j?.failed }}
+        {{ job?.done ?? 0 }} из {{ job?.total ?? 0 }} · с субтитрами {{ job?.ok ?? 0 }} · без {{ job?.noCaptions ?? 0 }}
+        @if (job?.failed) {
+          · ошибки {{ job?.failed }}
         }
       </p>
-      @if (j?.state === 'cooling') {
+      @if (job?.state === 'cooling') {
         <p class="current warn">
-          @if (j?.reason === 'network') {
+          @if (job?.reason === 'network') {
             Нет связи с YouTube — повторим через {{ remaining() }}
           } @else {
             YouTube притормозил запросы — продолжим через {{ remaining() }}
           }
         </p>
-      } @else if (j?.current) {
-        <p class="current" [title]="j?.current">{{ j?.current }}</p>
+      } @else if (job?.current) {
+        <p class="current" [title]="job?.current">{{ job?.current }}</p>
       }
     }
 
-    @if (j?.state === 'blocked') {
+    @if (job?.state === 'blocked') {
       <div class="notice error">
         <svg appIcon name="triangle-alert" [size]="16"></svg>
         <div>
@@ -127,48 +127,48 @@ const STATE_LABEL: Record<string, string> = {
           <p class="hint">Можно подождать, сменить сеть или запустить сервер с <code>HTTPS_PROXY</code>.</p>
         </div>
       </div>
-    } @else if (j?.state === 'failed') {
+    } @else if (job?.state === 'failed') {
       <div class="notice error">
         <svg appIcon name="triangle-alert" [size]="16"></svg>
         <div>
-          @if (j?.reason === 'network') {
+          @if (job?.reason === 'network') {
             <p>Нет связи с YouTube — индексация остановлена, нескачанные видео остались в очереди. Проверьте сеть и нажмите «Докачать».</p>
-            <p class="hint">{{ j?.error }}</p>
+            <p class="hint">{{ job?.error }}</p>
           } @else {
-            <p>{{ j?.error }}</p>
+            <p>{{ job?.error }}</p>
           }
         </div>
       </div>
-    } @else if (!active() && c.counts.failed > 0) {
+    } @else if (!active() && channelView.counts.failed > 0) {
       <p class="current warn">{{ failedLine() }}</p>
     }
 
-    @if (actionError(); as e) {
-      <p class="current warn">{{ e }}</p>
+    @if (actionError(); as message) {
+      <p class="current warn">{{ message }}</p>
     }
 
     <div class="actions">
       @if (active()) {
-        <button class="btn quiet" type="button" (click)="act(api.cancel(c.id))">
+        <button class="btn quiet" type="button" (click)="act(api.cancel(channelView.id))">
           <svg appIcon name="square" [size]="14"></svg> Остановить
         </button>
-      } @else if (j?.state === 'blocked') {
-        <button class="btn" type="button" (click)="act(api.refresh(c.id, true))">
+      } @else if (job?.state === 'blocked') {
+        <button class="btn" type="button" (click)="act(api.refresh(channelView.id, true))">
           <svg appIcon name="refresh-cw" [size]="14"></svg> Повторить сейчас
         </button>
-        <button class="btn quiet" type="button" (click)="act(api.cancel(c.id))" title="Не повторять самим после паузы">
+        <button class="btn quiet" type="button" (click)="act(api.cancel(channelView.id))" title="Не повторять самим после паузы">
           Отменить
         </button>
       } @else {
-        <button class="btn quiet" type="button" (click)="act(api.refresh(c.id))"
-          [title]="'Проверить новые видео и докачать то, что не удалось'">
+        <button class="btn quiet" type="button" (click)="act(api.refresh(channelView.id))"
+          title="Проверить новые видео и докачать то, что не удалось">
           <svg appIcon name="refresh-cw" [size]="14"></svg>
-          {{ c.counts.failed || c.counts.pending ? 'Докачать' : 'Обновить' }}
+          {{ channelView.counts.failed || channelView.counts.pending ? 'Докачать' : 'Обновить' }}
         </button>
       }
       <span class="spacer"></span>
       @if (confirmDelete()) {
-        <button class="btn danger" type="button" (click)="act(api.remove(c.id))">Удалить канал?</button>
+        <button class="btn danger" type="button" (click)="act(api.remove(channelView.id))">Удалить канал?</button>
         <button class="btn quiet icon" type="button" (click)="confirmDelete.set(false)" title="Не удалять">
           <svg appIcon name="x" [size]="16"></svg>
           <span class="sr-only">Не удалять</span>
@@ -319,30 +319,30 @@ export class ChannelRow {
   protected readonly actionError = signal<string | null>(null);
 
   protected readonly active = computed(() => {
-    const j = this.channel().job;
-    return !!j && ACTIVE_STATES.includes(j.state);
+    const job = this.channel().job;
+    return !!job && ACTIVE_STATES.includes(job.state);
   });
 
   protected readonly stateLabel = computed(() => {
-    const j = this.channel().job;
-    if (!j) return '';
-    if (j.state === 'cooling') return `пауза ${this.remaining()}`;
-    return STATE_LABEL[j.state] ?? '';
+    const job = this.channel().job;
+    if (!job) return '';
+    if (job.state === 'cooling') return `пауза ${this.remaining()}`;
+    return STATE_LABEL[job.state] ?? '';
   });
 
   protected readonly percent = computed(() => {
-    const j = this.channel().job;
-    return j && j.total > 0 ? (j.done / j.total) * 100 : 0;
+    const job = this.channel().job;
+    return job && job.total > 0 ? (job.done / job.total) * 100 : 0;
   });
 
-  // Пауза: до какого времени и сколько её осталось в момент, когда её
-  // увидели. Длительность считается один раз на каждый cooldownUntil:
-  // снимки SSE приходят и посреди паузы, и пересчёт укорачивал бы
-  // идущую анимацию — полоска прыгала бы вперёд.
+  // Пауза и сколько от неё осталось в момент, когда её увидели.
+  // Длительность считаем один раз на каждый cooldownUntil. Снимки SSE
+  // приходят и посреди паузы, и без этого анимация укорачивалась бы,
+  // а полоска прыгала вперёд.
   protected readonly pauses = linkedSignal<string | undefined, { until: string; ms: number }[]>({
     source: () => this.channel().job?.cooldownUntil,
     computation: (until, previous) => {
-      // Вход меняется на каждом снимке — та же пауза оставляет прежнюю длительность.
+      // Вход меняется на каждом снимке. Та же пауза сохраняет прежнюю длительность.
       if (previous && previous.source === until) return previous.value;
       return until ? [{ until, ms: Math.max(0, new Date(until).getTime() - Date.now()) }] : [];
     },
@@ -359,14 +359,14 @@ export class ChannelRow {
   });
 
   protected readonly videosLine = computed(() => {
-    const c = this.channel().counts;
-    if (c.total === 0) return 'видео ещё не получены';
-    return `${plural(c.ok, ['видео', 'видео', 'видео'])} с субтитрами из ${c.total}`;
+    const counts = this.channel().counts;
+    if (counts.total === 0) return 'видео ещё не получены';
+    return `${plural(counts.ok, ['видео', 'видео', 'видео'])} с субтитрами из ${counts.total}`;
   });
 
   protected readonly failedLine = computed(() => {
-    const c = this.channel().counts;
-    return `${plural(c.failed, ['видео не скачалось', 'видео не скачались', 'видео не скачались'])} — можно докачать`;
+    const counts = this.channel().counts;
+    return `${plural(counts.failed, ['видео не скачалось', 'видео не скачались', 'видео не скачались'])} — можно докачать`;
   });
 
   protected async act(action: Promise<unknown>) {

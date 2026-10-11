@@ -4,28 +4,28 @@ import { date, highlight, plural, thumbUrl, timecode, watchUrl } from './format'
 import { Icon } from './icon';
 import { PlayerService } from './player';
 
-const SHOWN = 3;
+const HITS_SHOWN_AT_FIRST = 3;
 
-// Совпадения в одном видео: шапка с превью и строки с метками времени.
+// Совпадения в одном видео. Сверху превью и название, ниже строки с метками времени.
 @Component({
   selector: 'app-video-group',
   changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [Icon],
   template: `
-    @let v = video();
+    @let videoHits = video();
     <header class="head">
-      <button class="thumb" type="button" (click)="play(v.hits[0])" [attr.aria-label]="'Смотреть: ' + v.title">
-        <img [src]="thumb()" alt="" width="128" height="72" loading="lazy" referrerpolicy="no-referrer" />
-        @if (v.duration) {
-          <span class="duration mono">{{ timecode(v.duration) }}</span>
+      <button class="thumb" type="button" (click)="play(videoHits.hits[0])" [attr.aria-label]="'Смотреть: ' + videoHits.title">
+        <img [src]="thumbnailUrl()" alt="" width="128" height="72" loading="lazy" referrerpolicy="no-referrer" />
+        @if (videoHits.duration) {
+          <span class="duration mono">{{ timecode(videoHits.duration) }}</span>
         }
       </button>
       <div class="info">
-        <h3 class="title" [title]="v.title">{{ v.title }}</h3>
+        <h3 class="title" [title]="videoHits.title">{{ videoHits.title }}</h3>
         <p class="meta">
-          {{ v.channelTitle }}
-          @if (published()) {
-            · {{ published() }}
+          {{ videoHits.channelTitle }}
+          @if (publishedDate()) {
+            · {{ publishedDate() }}
           }
           · {{ hitsLine() }}
         </p>
@@ -33,31 +33,31 @@ const SHOWN = 3;
     </header>
 
     <ol class="hits">
-      @for (h of shown(); track h.s; let i = $index) {
-        <li class="hit" [class.playing]="isPlaying(h)" [class.appear]="i >= appearFrom()" [style.--i]="i - appearFrom()">
-          <button class="time mono" type="button" (click)="play(h)" [attr.aria-label]="'Смотреть с ' + timecode(h.s)">
-            {{ timecode(h.s) }}
+      @for (hit of visibleHits(); track hit.s; let i = $index) {
+        <li class="hit" [class.playing]="isPlaying(hit)" [class.appear]="i >= appearFrom()" [style.--i]="i - appearFrom()">
+          <button class="time mono" type="button" (click)="play(hit)" [attr.aria-label]="'Смотреть с ' + timecode(hit.s)">
+            {{ timecode(hit.s) }}
           </button>
           <div class="lines">
-            @for (line of h.lines; track $index) {
+            @for (line of hit.lines; track $index) {
               <p class="line" [class.context]="!line.m">
-                @for (p of pieces(line.t, line.m); track $index) {
-                  @if (p.mark) {
-                    <mark>{{ p.text }}</mark>
+                @for (piece of pieces(line.t, line.m); track $index) {
+                  @if (piece.mark) {
+                    <mark>{{ piece.text }}</mark>
                   } @else {
-                    {{ p.text }}
+                    {{ piece.text }}
                   }
                 }
               </p>
             }
           </div>
           <div class="row-actions">
-            <a class="btn icon quiet" [href]="watch(h)" target="_blank" rel="noopener" title="Открыть на YouTube с этого места">
+            <a class="btn icon quiet" [href]="watch(hit)" target="_blank" rel="noopener" title="Открыть на YouTube с этого места">
               <svg appIcon name="external-link" [size]="15"></svg>
               <span class="sr-only">Открыть на YouTube</span>
             </a>
-            <button class="btn icon quiet" type="button" (click)="copy(h)" [title]="copied() === h.s ? 'Скопировано' : 'Скопировать ссылку с меткой времени'">
-              <svg appIcon [name]="copied() === h.s ? 'check' : 'link'" [size]="15"></svg>
+            <button class="btn icon quiet" type="button" (click)="copy(hit)" [title]="copied() === hit.s ? 'Скопировано' : 'Скопировать ссылку с меткой времени'">
+              <svg appIcon [name]="copied() === hit.s ? 'check' : 'link'" [size]="15"></svg>
               <span class="sr-only">Скопировать ссылку</span>
             </button>
           </div>
@@ -65,13 +65,13 @@ const SHOWN = 3;
       }
     </ol>
 
-    @if (hidden() > 0) {
+    @if (hiddenCount() > 0) {
       <button class="btn quiet more" type="button" (click)="expand()">
         <svg appIcon name="chevron-down" [size]="16"></svg>
-        Ещё {{ hidden() }}
+        Ещё {{ hiddenCount() }}
       </button>
-    } @else if (v.total > v.hits.length) {
-      <p class="cut subtle">Показаны первые {{ v.hits.length }} из {{ v.total }} — уточните запрос.</p>
+    } @else if (videoHits.total > videoHits.hits.length) {
+      <p class="cut subtle">Показаны первые {{ videoHits.hits.length }} из {{ videoHits.total }} — уточните запрос.</p>
     }
   `,
   styles: `
@@ -233,46 +233,46 @@ export class VideoGroup {
   protected readonly pieces = highlight;
   protected readonly expanded = signal(false);
   protected readonly copied = signal<number | null>(null);
-  // С какого совпадения начинается проявление: при «Ещё» — только новые.
+  // С какого совпадения начинать проявление. После «Ещё» проявляются только новые.
   protected readonly appearFrom = signal(Infinity);
 
-  protected readonly shown = computed(() =>
-    this.expanded() ? this.video().hits : this.video().hits.slice(0, SHOWN),
+  protected readonly visibleHits = computed(() =>
+    this.expanded() ? this.video().hits : this.video().hits.slice(0, HITS_SHOWN_AT_FIRST),
   );
-  protected readonly hidden = computed(() => this.video().hits.length - this.shown().length);
-  protected readonly thumb = computed(() => thumbUrl(this.video().id));
-  protected readonly published = computed(() => date(this.video().published));
+  protected readonly hiddenCount = computed(() => this.video().hits.length - this.visibleHits().length);
+  protected readonly thumbnailUrl = computed(() => thumbUrl(this.video().id));
+  protected readonly publishedDate = computed(() => date(this.video().published));
   protected readonly hitsLine = computed(() =>
     plural(this.video().total, ['совпадение', 'совпадения', 'совпадений']),
   );
 
   protected expand() {
-    this.appearFrom.set(SHOWN);
+    this.appearFrom.set(HITS_SHOWN_AT_FIRST);
     this.expanded.set(true);
   }
 
-  protected isPlaying(h: Hit) {
-    return this.player.isPlaying(this.video().id, h.s);
+  protected isPlaying(hit: Hit) {
+    return this.player.isPlaying(this.video().id, hit.s);
   }
 
-  protected play(h: Hit) {
-    const v = this.video();
-    this.player.play({ id: v.id, title: v.title, channelTitle: v.channelTitle }, h.s);
+  protected play(hit: Hit) {
+    const video = this.video();
+    this.player.play({ id: video.id, title: video.title, channelTitle: video.channelTitle }, hit.s);
   }
 
-  protected watch(h: Hit) {
-    return watchUrl(this.video().id, h.s);
+  protected watch(hit: Hit) {
+    return watchUrl(this.video().id, hit.s);
   }
 
-  protected async copy(h: Hit) {
+  protected async copy(hit: Hit) {
     try {
-      await navigator.clipboard.writeText(this.watch(h));
-      this.copied.set(h.s);
+      await navigator.clipboard.writeText(this.watch(hit));
+      this.copied.set(hit.s);
       setTimeout(() => {
-        if (this.copied() === h.s) this.copied.set(null);
+        if (this.copied() === hit.s) this.copied.set(null);
       }, 1200);
     } catch {
-      // Буфер обмена недоступен — ссылка всё равно открывается кнопкой рядом.
+      // Буфер обмена недоступен. Ссылку всё равно можно открыть кнопкой рядом.
     }
   }
 }

@@ -18,7 +18,7 @@ function channel(cooldownUntil?: string): ChannelView {
 
 describe('ChannelRow', () => {
   beforeEach(() => {
-    // Настоящий Api открывает EventSource — в тесте его заменяет заглушка.
+    // Настоящий Api открывает EventSource, поэтому в тесте вместо него заглушка.
     TestBed.configureTestingModule({
       providers: [{ provide: Api, useValue: { state: signal(null), channels: signal([]) } }],
     });
@@ -34,14 +34,14 @@ describe('ChannelRow', () => {
     const duration = first.style.animationDuration;
     expect(parseFloat(duration)).toBeGreaterThan(100_000);
 
-    // Новый снимок SSE: другой объект, та же пауза — тот же элемент, та же длительность.
+    // Новый снимок SSE: другой объект, но та же пауза. Элемент и длительность остаются прежними.
     vi.useFakeTimers({ now: Date.now() + 40_000 });
     fixture.componentRef.setInput('channel', channel(until));
     fixture.detectChanges();
     expect(bar()).toBe(first);
     expect(bar().style.animationDuration).toBe(duration);
 
-    // Новая пауза — новый элемент с новой длительностью.
+    // Новая пауза даёт новый элемент с новой длительностью.
     const next = new Date(Date.now() + 60_000).toISOString();
     fixture.componentRef.setInput('channel', channel(next));
     fixture.detectChanges();

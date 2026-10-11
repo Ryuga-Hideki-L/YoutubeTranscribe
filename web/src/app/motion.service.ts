@@ -2,8 +2,8 @@ import { DestroyRef, Injectable, computed, effect, inject, signal } from '@angul
 
 export type MotionPreference = 'system' | 'on' | 'off';
 
-// Ключ и разбор должны совпадать со скриптом public/theme-init.js:
-// он ставит data-motion до первой отрисовки.
+// Ключ и разбор должны совпадать со скриптом public/theme-init.js.
+// Он ставит data-motion до первой отрисовки.
 const STORAGE_KEY = 'doslovno-motion';
 const reducedQuery = '(prefers-reduced-motion: reduce)';
 
@@ -16,9 +16,9 @@ function readPreference(): MotionPreference {
   }
 }
 
-// Анимации: выбор человека или системная настройка
-// «уменьшить движение». Итог пишется в html[data-motion="on|off"] — по нему
-// CSS глушит переходы, а раскрытие темы смотрит на allowed().
+// Анимации включает выбор человека или системная настройка «уменьшить
+// движение». Итог пишется в html[data-motion="on|off"]. По нему CSS глушит
+// переходы, а раскрытие темы смотрит на allowed().
 @Injectable({ providedIn: 'root' })
 export class MotionService {
   readonly preference = signal<MotionPreference>(readPreference());
@@ -45,7 +45,7 @@ export class MotionService {
       if (preference === 'system') localStorage.removeItem(STORAGE_KEY);
       else localStorage.setItem(STORAGE_KEY, preference);
     } catch {
-      // Хранилище недоступно — выбор живёт до перезагрузки.
+      // Хранилище недоступно. Выбор живёт до перезагрузки.
     }
     this.preference.set(preference);
   }

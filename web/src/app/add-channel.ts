@@ -3,11 +3,12 @@ import { Api, ApiError, Candidate } from './api';
 import { plural } from './format';
 import { Icon } from './icon';
 
-const LIMITS = [50, 100, 200, 500];
+const LIMIT_OPTIONS = [50, 100, 200, 500];
 
-// Добавление канала: ввод → кандидаты → «Добавить». Поиск по названию
-// стоит 100 единиц квоты из 10 000 в сутки, поэтому сервер сначала
-// отвечает needsSearch, и запускает его только явная кнопка.
+// Добавление канала: ввод, список кандидатов, кнопка «Добавить».
+// Поиск по названию стоит 100 единиц квоты из 10 000 в сутки. Поэтому
+// сервер сначала отвечает needsSearch, а сам поиск запускает только
+// явная кнопка.
 @Component({
   selector: 'app-add-channel',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -46,33 +47,33 @@ const LIMITS = [50, 100, 200, 500];
       </div>
     }
 
-    @if (error(); as e) {
+    @if (error(); as message) {
       <div class="notice error" role="alert">
         <svg appIcon name="triangle-alert" [size]="16"></svg>
-        <p>{{ e }}</p>
+        <p>{{ message }}</p>
       </div>
     }
 
     @if (candidates().length) {
       <ul class="candidates">
-        @for (c of candidates(); track c.id; let i = $index) {
+        @for (candidate of candidates(); track candidate.id; let i = $index) {
           <li class="candidate appear" [style.--i]="i">
-            @if (c.thumb) {
-              <img class="avatar" [src]="c.thumb" alt="" width="40" height="40" referrerpolicy="no-referrer" />
+            @if (candidate.thumb) {
+              <img class="avatar" [src]="candidate.thumb" alt="" width="40" height="40" referrerpolicy="no-referrer" />
             }
             <div class="names">
-              <p class="title">{{ c.title }}</p>
+              <p class="title">{{ candidate.title }}</p>
               <p class="sub">
-                @if (c.handle) {
-                  <span class="mono">{{ c.handle }}</span> ·
+                @if (candidate.handle) {
+                  <span class="mono">{{ candidate.handle }}</span> ·
                 }
-                {{ videoCount(c) }}
+                {{ videoCount(candidate) }}
               </p>
             </div>
-            @if (c.inLibrary) {
+            @if (candidate.inLibrary) {
               <span class="subtle in-lib"><svg appIcon name="check" [size]="15"></svg> уже есть</span>
             } @else {
-              <button class="btn primary" type="button" (click)="add(c)" [disabled]="busy()">
+              <button class="btn primary" type="button" (click)="add(candidate)" [disabled]="busy()">
                 <svg appIcon name="plus" [size]="16"></svg> Добавить
               </button>
             }
@@ -82,8 +83,8 @@ const LIMITS = [50, 100, 200, 500];
       <label class="limit">
         Брать последние
         <select class="field" [value]="limit()" (change)="limit.set(+$any($event.target).value)">
-          @for (n of limits; track n) {
-            <option [value]="n">{{ n }}</option>
+          @for (option of limitOptions; track option) {
+            <option [value]="option">{{ option }}</option>
           }
         </select>
         видео
@@ -179,7 +180,7 @@ export class AddChannel {
   private readonly api = inject(Api);
   readonly large = input(false);
 
-  protected readonly limits = LIMITS;
+  protected readonly limitOptions = LIMIT_OPTIONS;
   protected readonly query = signal('');
   protected readonly busy = signal(false);
   protected readonly needsSearch = signal(false);
@@ -189,8 +190,8 @@ export class AddChannel {
   protected readonly hasKey = computed(() => this.api.state()?.hasKey ?? true);
 
   constructor() {
-    const def = this.api.state()?.defaultLimit;
-    if (def) this.limit.set(def);
+    const defaultLimit = this.api.state()?.defaultLimit;
+    if (defaultLimit) this.limit.set(defaultLimit);
   }
 
   protected onInput(value: string) {
@@ -200,17 +201,17 @@ export class AddChannel {
   }
 
   protected async find(search: boolean) {
-    const q = this.query().trim();
-    if (!q) return;
+    const text = this.query().trim();
+    if (!text) return;
     this.busy.set(true);
     this.error.set(null);
     this.candidates.set([]);
     try {
-      const res = await this.api.resolve(q, search);
-      this.needsSearch.set(!!res.needsSearch);
-      this.candidates.set(res.channels);
-      // Найден ровно один новый канал по @имени или ссылке — добавлять его
-      // всё равно кнопкой: человек видит, тот ли это канал.
+      const result = await this.api.resolve(text, search);
+      this.needsSearch.set(!!result.needsSearch);
+      // Даже если найден ровно один новый канал, добавляем его только
+      // кнопкой. Так человек видит, тот ли это канал.
+      this.candidates.set(result.channels);
     } catch (err) {
       this.needsSearch.set(false);
       this.error.set(err instanceof ApiError ? err.message : 'Не получилось найти канал');
@@ -219,11 +220,11 @@ export class AddChannel {
     }
   }
 
-  protected async add(c: Candidate) {
+  protected async add(candidate: Candidate) {
     this.busy.set(true);
     this.error.set(null);
     try {
-      await this.api.add(c.id, this.limit());
+      await this.api.add(candidate.id, this.limit());
       this.candidates.set([]);
       this.query.set('');
     } catch (err) {
@@ -233,7 +234,7 @@ export class AddChannel {
     }
   }
 
-  protected videoCount(c: Candidate) {
-    return plural(c.videoCount, ['видео', 'видео', 'видео']);
+  protected videoCount(candidate: Candidate) {
+    return plural(candidate.videoCount, ['видео', 'видео', 'видео']);
   }
 }

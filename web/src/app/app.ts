@@ -17,8 +17,8 @@ const THEME_TITLE: Record<ThemePreference, string> = {
   dark: 'Тёмная тема',
 };
 
-// Раскладка: слева каналы, в центре поиск, справа плеер (на широком
-// экране). Уже — плеер всплывает карточкой внизу, каналы сворачиваются.
+// Раскладка: слева каналы, в центре поиск, справа плеер. На узком экране
+// плеер всплывает карточкой внизу, а каналы сворачиваются.
 @Component({
   selector: 'app-root',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -100,8 +100,8 @@ const THEME_TITLE: Record<ThemePreference, string> = {
                 YouTube притормозил запросы: следующая попытка в {{ until }}.
               </p>
             }
-            @for (c of api.channels(); track c.id) {
-              <app-channel-row [channel]="c" />
+            @for (channel of api.channels(); track channel.id) {
+              <app-channel-row [channel]="channel" />
             }
           </div>
         </aside>
@@ -268,7 +268,7 @@ const THEME_TITLE: Record<ThemePreference, string> = {
       top: 12px;
     }
 
-    /* Без правой колонки: плеер — карточка в правом нижнем углу. */
+    /* Правой колонки нет: плеер становится карточкой в правом нижнем углу. */
     @media (max-width: 1279px) {
       .layout {
         grid-template-columns: var(--rail) minmax(0, 1fr);
@@ -298,13 +298,13 @@ const THEME_TITLE: Record<ThemePreference, string> = {
           opacity 240ms var(--ease),
           transform 240ms var(--ease);
       }
-      /* --player-h ставит сам плеер (ResizeObserver): видео плюс строка с названием. */
+      /* --player-h ставит сам плеер через ResizeObserver. Это высота видео вместе со строкой названия. */
       .playing .main {
         padding-bottom: calc(var(--player-h, 320px) + 16px);
       }
     }
 
-    /* Одна колонка: каналы сворачиваются над поиском, плеер — снизу во всю ширину. */
+    /* Одна колонка. Каналы сворачиваются над поиском, плеер прижат к низу во всю ширину. */
     @media (max-width: 1023px) {
       .layout {
         grid-template-columns: minmax(0, 1fr);
@@ -368,19 +368,20 @@ export class App {
   private readonly now = inject(Clock).now;
 
   protected readonly adding = signal(false);
-  // На узком экране каналы раскрываются, когда индексация начинается;
-  // когда кончается — остаются как оставил человек (иначе список
-  // сворачивался бы прямо под пальцем).
+  // На узком экране каналы раскрываются, когда начинается индексация.
+  // Когда она кончается, список остаётся как есть, иначе он свернулся бы
+  // прямо под пальцем.
   protected readonly railOpen = signal(false);
 
   protected readonly themeIcon = computed(() => THEME_ICON[this.theme.preference()]);
   protected readonly themeTitle = computed(() => THEME_TITLE[this.theme.preference()]);
 
-  // Общая пауза после блокировки, если её не показывает ни одно задание.
+  // Общая пауза после блокировки. Показываем её, только если ни один канал
+  // не показывает свою паузу.
   protected readonly globalBlock = computed(() => {
     const until = this.api.state()?.blockedUntil;
     if (!until || new Date(until).getTime() <= this.now()) return '';
-    const shown = this.api.channels().some((c) => c.job?.state === 'cooling' || c.job?.state === 'blocked');
+    const shown = this.api.channels().some((channel) => channel.job?.state === 'cooling' || channel.job?.state === 'blocked');
     return shown ? '' : clock(until);
   });
 
@@ -393,7 +394,7 @@ export class App {
     });
   }
 
-  protected cycleTheme(e: MouseEvent) {
-    this.theme.setPreference(THEME_NEXT[this.theme.preference()], e.currentTarget as HTMLElement);
+  protected cycleTheme(event: MouseEvent) {
+    this.theme.setPreference(THEME_NEXT[this.theme.preference()], event.currentTarget as HTMLElement);
   }
 }

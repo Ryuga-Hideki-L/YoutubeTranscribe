@@ -2,28 +2,28 @@
 
 const plurals = new Intl.PluralRules('ru');
 
-// plural(5, ['видео', 'видео', 'видео']) — формы для one, few, many.
-export function plural(n: number, [one, few, many]: [string, string, string]): string {
-  const form = plurals.select(n);
+// Пример: plural(5, ['видео', 'видео', 'видео']). Формы идут в порядке one, few, many.
+export function plural(count: number, [one, few, many]: [string, string, string]): string {
+  const form = plurals.select(count);
   const word = form === 'one' ? one : form === 'few' ? few : many;
-  return `${n.toLocaleString('ru')} ${word}`;
+  return `${count.toLocaleString('ru')} ${word}`;
 }
 
 // Метка времени в видео: 0:07, 12:34, 1:02:03.
 export function timecode(seconds: number): string {
-  const s = Math.max(0, Math.floor(seconds));
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  const ss = String(s % 60).padStart(2, '0');
-  return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`;
+  const total = Math.max(0, Math.floor(seconds));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const secs = String(total % 60).padStart(2, '0');
+  return hours > 0 ? `${hours}:${String(minutes).padStart(2, '0')}:${secs}` : `${minutes}:${secs}`;
 }
 
 const dateFormat = new Intl.DateTimeFormat('ru', { day: 'numeric', month: 'short', year: 'numeric' });
 
 export function date(iso: string | undefined): string {
   if (!iso) return '';
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) || d.getFullYear() < 2000 ? '' : dateFormat.format(d);
+  const parsed = new Date(iso);
+  return Number.isNaN(parsed.getTime()) || parsed.getFullYear() < 2000 ? '' : dateFormat.format(parsed);
 }
 
 const timeFormat = new Intl.DateTimeFormat('ru', { hour: '2-digit', minute: '2-digit' });
@@ -32,16 +32,16 @@ export function clock(iso: string): string {
   return timeFormat.format(new Date(iso));
 }
 
-// Сколько осталось до момента: «48 с», «3 мин 05 с».
+// Сколько осталось до момента, например «48 с» или «3 мин 05 с».
 export function countdown(ms: number): string {
-  const s = Math.max(0, Math.ceil(ms / 1000));
-  if (s < 60) return `${s} с`;
-  const m = Math.floor(s / 60);
-  return `${m} мин ${String(s % 60).padStart(2, '0')} с`;
+  const total = Math.max(0, Math.ceil(ms / 1000));
+  if (total < 60) return `${total} с`;
+  const minutes = Math.floor(total / 60);
+  return `${minutes} мин ${String(total % 60).padStart(2, '0')} с`;
 }
 
-// Куски строки для подсветки: marks — [от, до) в кодовых точках, как
-// считает Go-сервер, поэтому строка режется через Array.from, а не по UTF-16.
+// Куски строки для подсветки. marks хранит пары [от, до) в кодовых точках,
+// так же считает Go-сервер. Поэтому строку режем через Array.from, а не по UTF-16.
 export interface Piece {
   text: string;
   mark: boolean;

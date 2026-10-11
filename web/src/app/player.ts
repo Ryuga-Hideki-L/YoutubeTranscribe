@@ -23,9 +23,9 @@ export interface Playing {
   seq: number;
 }
 
-// Что играет сейчас. Плеер один на всё приложение: клик по другой метке
-// того же видео — перемотка, по другому видео — loadVideoById, без
-// пересоздания iframe.
+// Что играет сейчас. Плеер один на всё приложение. Клик по другой метке
+// того же видео перематывает, клик по другому видео вызывает loadVideoById.
+// Iframe при этом не пересоздаётся.
 @Injectable({ providedIn: 'root' })
 export class PlayerService {
   readonly current = signal<Playing | null>(null);
@@ -40,8 +40,8 @@ export class PlayerService {
   }
 
   isPlaying(id: string, start: number) {
-    const c = this.current();
-    return c !== null && c.id === id && c.start === start;
+    const playing = this.current();
+    return playing !== null && playing.id === id && playing.start === start;
   }
 }
 
@@ -56,14 +56,14 @@ interface YTPlayer {
 
 interface YTNamespace {
   Player: new (
-    el: HTMLElement,
+    element: HTMLElement,
     options: {
       host: string;
       videoId: string;
       playerVars: Record<string, number | string>;
       events: {
-        onReady?: (e: { target: YTPlayer }) => void;
-        onError?: (e: { data: number }) => void;
+        onReady?: (event: { target: YTPlayer }) => void;
+        onError?: (event: { data: number }) => void;
       };
     },
   ) => YTPlayer;
@@ -78,8 +78,7 @@ declare global {
 
 let apiLoading: Promise<YTNamespace> | null = null;
 
-// Скрипт IFrame API грузится один раз и только когда человек впервые нажал
-// на метку времени.
+// Скрипт IFrame API грузится один раз, при первом нажатии на метку времени.
 function loadApi(): Promise<YTNamespace> {
   apiLoading ??= new Promise((resolve, reject) => {
     if (window.YT?.Player) {
@@ -125,10 +124,10 @@ function errorText(code: number): string {
     <div class="frame">
       <div class="video" [class.hidden]="current() === null">
         <div #mount></div>
-        @if (error(); as e) {
+        @if (error(); as message) {
           <div class="video-error">
-            <p>{{ e }}</p>
-            @if (current(); as c) {
+            <p>{{ message }}</p>
+            @if (current()) {
               <a class="btn" [href]="link()" target="_blank" rel="noopener">
                 <svg appIcon name="external-link" [size]="16"></svg> Открыть на YouTube
               </a>
@@ -136,12 +135,12 @@ function errorText(code: number): string {
           </div>
         }
       </div>
-      @if (current(); as c) {
+      @if (current(); as playing) {
         <div class="meta">
           <div class="text">
-            <p class="title" [title]="c.title">{{ c.title }}</p>
+            <p class="title" [title]="playing.title">{{ playing.title }}</p>
             <p class="sub">
-              <span>{{ c.channelTitle }}</span> · <span class="mono">{{ timecode(c.start) }}</span>
+              <span>{{ playing.channelTitle }}</span> · <span class="mono">{{ timecode(playing.start) }}</span>
             </p>
           </div>
           <a class="btn icon quiet" [href]="link()" target="_blank" rel="noopener" title="Открыть на YouTube">
@@ -171,7 +170,7 @@ function errorText(code: number): string {
       background: var(--surface);
       overflow: hidden;
     }
-    /* Узкий экран: плеер прижат к низу экрана — скругление только сверху. */
+    /* Узкий экран. Плеер прижат к низу, поэтому скруглён только сверху. */
     @media (max-width: 1023px) {
       .frame {
         border-bottom: 0;
@@ -236,26 +235,26 @@ function errorText(code: number): string {
   `,
 })
 export class Player {
-  private readonly svc = inject(PlayerService);
+  private readonly playerService = inject(PlayerService);
   private readonly mount = viewChild.required<ElementRef<HTMLElement>>('mount');
-  protected readonly current = this.svc.current;
+  protected readonly current = this.playerService.current;
   protected readonly error = signal<string | null>(null);
   protected readonly timecode = timecode;
   protected readonly link = computed(() => {
-    const c = this.current();
-    return c ? watchUrl(c.id, c.start) : '';
+    const playing = this.current();
+    return playing ? watchUrl(playing.id, playing.start) : '';
   });
   private player: YTPlayer | null = null;
   private playerReady: Promise<YTPlayer> | null = null;
 
   constructor() {
     effect(() => {
-      const c = this.current();
-      if (c) untracked(() => void this.show(c));
+      const playing = this.current();
+      if (playing) untracked(() => void this.show(playing));
     });
-    // Высота плеера — в --player-h на <html>: на узком экране плеер висит
-    // поверх результатов, и отступ под ним считается от настоящей высоты
-    // (видео плюс строка с названием), а не на глаз.
+    // Высоту плеера пишем в --player-h на <html>. На узком экране плеер
+    // висит поверх результатов, и отступ под ним считается от настоящей
+    // высоты: видео плюс строка названия.
     const host = inject(ElementRef<HTMLElement>).nativeElement;
     const root = document.documentElement;
     const observer = new ResizeObserver(() => root.style.setProperty('--player-h', `${host.offsetHeight}px`));
@@ -266,14 +265,14 @@ export class Player {
     });
   }
 
-  private async show(c: Playing) {
+  private async show(playing: Playing) {
     this.error.set(null);
     try {
-      const player = await this.ensurePlayer(c);
-      if (player.getVideoData?.().video_id === c.id) {
-        player.seekTo(c.start, true);
+      const player = await this.ensurePlayer(playing);
+      if (player.getVideoData?.().video_id === playing.id) {
+        player.seekTo(playing.start, true);
       } else {
-        player.loadVideoById({ videoId: c.id, startSeconds: Math.floor(c.start) });
+        player.loadVideoById({ videoId: playing.id, startSeconds: Math.floor(playing.start) });
       }
       player.playVideo();
     } catch {
@@ -281,19 +280,19 @@ export class Player {
     }
   }
 
-  // Первый показ создаёт плеер сразу с нужным видео; дальше он только
+  // Первый показ создаёт плеер сразу с нужным видео. Дальше плеер только
   // переключается.
-  private ensurePlayer(c: Playing): Promise<YTPlayer> {
+  private ensurePlayer(playing: Playing): Promise<YTPlayer> {
     this.playerReady ??= loadApi().then(
-      (YT) =>
+      (youtube) =>
         new Promise<YTPlayer>((resolve) => {
-          this.player = new YT.Player(this.mount().nativeElement, {
+          this.player = new youtube.Player(this.mount().nativeElement, {
             host: 'https://www.youtube-nocookie.com',
-            videoId: c.id,
-            playerVars: { start: Math.floor(c.start), autoplay: 1, playsinline: 1, rel: 0 },
+            videoId: playing.id,
+            playerVars: { start: Math.floor(playing.start), autoplay: 1, playsinline: 1, rel: 0 },
             events: {
-              onReady: (e) => resolve(e.target),
-              onError: (e) => this.error.set(errorText(e.data)),
+              onReady: (event) => resolve(event.target),
+              onError: (event) => this.error.set(errorText(event.data)),
             },
           });
         }),
@@ -304,6 +303,6 @@ export class Player {
 
   protected close() {
     this.player?.pauseVideo();
-    this.svc.close();
+    this.playerService.close();
   }
 }
