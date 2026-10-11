@@ -389,17 +389,19 @@ func (ix *Indexer) notify() {
 	}
 }
 
-// update меняет задание под замком и оповещает подписчиков.
+// update меняет задание под замком и оповещает подписчиков. Задания
+// нет — канал удалили (Forget): заводить его заново нельзя, иначе в
+// списке остался бы призрак удалённого канала.
 func (ix *Indexer) update(id string, f func(j *Job)) {
 	ix.mu.Lock()
 	j, ok := ix.jobs[id]
-	if !ok {
-		j = &Job{ChannelID: id}
-		ix.jobs[id] = j
+	if ok {
+		f(j)
 	}
-	f(j)
 	ix.mu.Unlock()
-	ix.notify()
+	if ok {
+		ix.notify()
+	}
 }
 
 func (ix *Indexer) saveBreakerLocked() {
@@ -438,7 +440,8 @@ func (ix *Indexer) run(ctx context.Context, id string) {
 	ix.CheckNetwork(ctx)
 
 	if err := ix.list(ctx, id, limit); err != nil {
-		if ctx.Err() != nil {
+		if ctx.Err() != nil || errors.Is(err, library.ErrNoChannel) {
+			// Отменили или канал удалили, пока шёл запрос к API.
 			ix.finish(id, StateCancelled, "")
 			return
 		}
@@ -539,7 +542,7 @@ func (ix *Indexer) list(ctx context.Context, id string, limit int) error {
 	if err != nil {
 		return err
 	}
-	if err := ix.lib.Put(ch, limit); err != nil {
+	if err := ix.lib.Update(ch, limit); err != nil {
 		return err
 	}
 	videos, err := ix.yt.Uploads(ctx, ch.Uploads, limit)

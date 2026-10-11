@@ -123,6 +123,13 @@ func setup(t *testing.T, l Lister, f Fetcher, c *clock) (*Indexer, *library.Libr
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Каналы заводит api.add (lib.Put) до постановки в очередь; индексатор
+	// их только обновляет.
+	for _, id := range []string{"A", "B"} {
+		if err := lib.Put(youtube.Channel{ID: id, Title: "Канал " + id, Uploads: "UU" + id}, 10); err != nil {
+			t.Fatal(err)
+		}
+	}
 	statePath := filepath.Join(dir, "state.json")
 	ix := New(lib, l, f, Config{StatePath: statePath, Now: c.Now, Sleep: c.Sleep, After: c.After})
 	ix.checkNetwork = func(context.Context) bool { return false } // тесты без сети
@@ -397,4 +404,54 @@ func TestNetworkBlipRecovers(t *testing.T) {
 	if s, _ := lib.Summary("A"); s.Counts.OK != 2 {
 		t.Errorf("сводка: %+v", s.Counts)
 	}
+}
+
+// gatedLister ждёт release перед ответом Channel — окно, в которое
+// успевает прийти удаление канала.
+type gatedLister struct {
+	fakeLister
+	entered, release chan struct{}
+}
+
+func (g *gatedLister) Channel(ctx context.Context, id string) (youtube.Channel, error) {
+	close(g.entered)
+	<-g.release
+	return g.fakeLister.Channel(ctx, id)
+}
+
+func TestDeleteDuringListingDoesNotResurrect(t *testing.T) {
+	c := newClock()
+	g := &gatedLister{fakeLister: fakeLister{n: 2}, entered: make(chan struct{}), release: make(chan struct{})}
+	ix, lib, _ := setup(t, g, &fakeFetcher{}, c)
+	lib.Put(youtube.Channel{ID: "A", Title: "A", Uploads: "UUA"}, 10)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() { ix.Run(ctx); close(done) }()
+	ix.Enqueue("A", 10, false)
+	<-g.entered
+	// Удаление, как в api.remove: забыть задание, убрать канал.
+	ix.Forget("A")
+	if err := lib.Remove("A"); err != nil {
+		t.Fatal(err)
+	}
+	close(g.release)
+	// Рабочий доделывает задание — ждём, пока он снова свободен.
+	for {
+		ix.mu.Lock()
+		idle := ix.running == ""
+		ix.mu.Unlock()
+		if idle {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if _, ok := lib.Summary("A"); ok {
+		t.Error("удалённый канал вернулся в библиотеку")
+	}
+	if j, ok := ix.Jobs()["A"]; ok {
+		t.Errorf("задание-призрак: %+v", j)
+	}
+	cancel()
+	<-done
 }

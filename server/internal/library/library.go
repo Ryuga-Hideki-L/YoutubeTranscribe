@@ -236,6 +236,21 @@ func (l *Library) Put(c youtube.Channel, limit int) error {
 	return l.saveLocked(c.ID)
 }
 
+// Update обновляет данные и предел видео канала, только если он ещё есть:
+// индексатор не должен воскрешать канал, удалённый, пока шёл запрос к API.
+func (l *Library) Update(c youtube.Channel, limit int) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	ch, ok := l.channels[c.ID]
+	if !ok {
+		return ErrNoChannel
+	}
+	ch.Channel = c
+	ch.Limit = limit
+	l.reindexLocked()
+	return l.saveLocked(c.ID)
+}
+
 // Remove удаляет канал и его файл. Вызывающий сам останавливает индексацию
 // канала до вызова (indexer.Remove).
 func (l *Library) Remove(id string) error {
