@@ -1,6 +1,7 @@
 import {
   ChangeDetectionStrategy,
   Component,
+  DestroyRef,
   ElementRef,
   Injectable,
   computed,
@@ -251,6 +252,17 @@ export class Player {
     effect(() => {
       const c = this.current();
       if (c) untracked(() => void this.show(c));
+    });
+    // Высота плеера — в --player-h на <html>: на узком экране плеер висит
+    // поверх результатов, и отступ под ним считается от настоящей высоты
+    // (видео плюс строка с названием), а не на глаз.
+    const host = inject(ElementRef<HTMLElement>).nativeElement;
+    const root = document.documentElement;
+    const observer = new ResizeObserver(() => root.style.setProperty('--player-h', `${host.offsetHeight}px`));
+    observer.observe(host);
+    inject(DestroyRef).onDestroy(() => {
+      observer.disconnect();
+      root.style.removeProperty('--player-h');
     });
   }
 

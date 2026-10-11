@@ -298,8 +298,9 @@ const THEME_TITLE: Record<ThemePreference, string> = {
           opacity 240ms var(--ease),
           transform 240ms var(--ease);
       }
+      /* --player-h ставит сам плеер (ResizeObserver): видео плюс строка с названием. */
       .playing .main {
-        padding-bottom: 280px;
+        padding-bottom: calc(var(--player-h, 320px) + 16px);
       }
     }
 
@@ -343,7 +344,7 @@ const THEME_TITLE: Record<ThemePreference, string> = {
         margin: 0 auto;
       }
       .playing .main {
-        padding-bottom: min(56vw, 360px);
+        padding-bottom: var(--player-h, 360px);
       }
     }
 
