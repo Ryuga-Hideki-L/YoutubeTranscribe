@@ -71,7 +71,7 @@ const HITS_SHOWN_AT_FIRST = 3;
         Ещё {{ hiddenCount() }}
       </button>
     } @else if (videoHits.total > videoHits.hits.length) {
-      <p class="cut subtle">Показаны первые {{ videoHits.hits.length }} из {{ videoHits.total }} — уточните запрос.</p>
+      <p class="cut subtle">Показаны первые {{ videoHits.hits.length }} из {{ videoHits.total }}. Уточните запрос.</p>
     }
   `,
   styles: `

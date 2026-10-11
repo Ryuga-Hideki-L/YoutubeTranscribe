@@ -96,7 +96,7 @@ const STATE_LABEL: Record<string, string> = {
         }
       </div>
       <p class="numbers mono">
-        {{ job?.done ?? 0 }} из {{ job?.total ?? 0 }} · с субтитрами {{ job?.ok ?? 0 }} · без {{ job?.noCaptions ?? 0 }}
+        {{ job?.done ?? 0 }} из {{ job?.total ?? 0 }} · с субтитрами {{ job?.ok ?? 0 }} · без субтитров {{ job?.noCaptions ?? 0 }}
         @if (job?.failed) {
           · ошибки {{ job?.failed }}
         }
@@ -132,7 +132,7 @@ const STATE_LABEL: Record<string, string> = {
         <svg appIcon name="triangle-alert" [size]="16"></svg>
         <div>
           @if (job?.reason === 'network') {
-            <p>Нет связи с YouTube — индексация остановлена, нескачанные видео остались в очереди. Проверьте сеть и нажмите «Докачать».</p>
+            <p>Нет связи с YouTube, индексация остановлена. Нескачанные видео остались в очереди. Проверьте сеть и нажмите «Докачать».</p>
             <p class="hint">{{ job?.error }}</p>
           } @else {
             <p>{{ job?.error }}</p>
@@ -375,7 +375,7 @@ export class ChannelRow {
     try {
       await action;
     } catch (err) {
-      this.actionError.set(err instanceof ApiError ? err.message : 'Не получилось');
+      this.actionError.set(err instanceof ApiError ? err.message : 'Не получилось выполнить действие');
     }
   }
 }

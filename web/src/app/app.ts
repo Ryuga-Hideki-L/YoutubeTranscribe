@@ -59,7 +59,7 @@ const THEME_TITLE: Record<ThemePreference, string> = {
           <ng-container *ngTemplateOutlet="restricted" />
         }
         <app-add-channel [large]="true" />
-        <p class="subtle small">Индексация идёт в фоне: примерно 2–3 секунды на видео, YouTube не любит спешку.</p>
+        <p class="subtle small">Индексация идёт в фоне. На каждое видео уходит примерно 2–3 секунды, YouTube не любит спешку.</p>
       </main>
     } @else {
       <div class="layout" [class.playing]="player.current() !== null">
@@ -118,7 +118,7 @@ const THEME_TITLE: Record<ThemePreference, string> = {
       <div class="notice">
         <svg appIcon name="key-round" [size]="16"></svg>
         <p>
-          Нет ключа YouTube Data API — новые каналы не добавить, поиск по скачанному работает.
+          Нет ключа YouTube Data API, поэтому новые каналы не добавить. Поиск по скачанному работает.
           Впишите ключ в <code>YOUTUBE_API_KEY</code> в файле <code>.env</code> рядом с программой и перезапустите её.
         </p>
       </div>
@@ -128,8 +128,8 @@ const THEME_TITLE: Record<ThemePreference, string> = {
       <div class="notice">
         <svg appIcon name="triangle-alert" [size]="16"></svg>
         <p>
-          Сеть включает «Безопасный режим» YouTube — так делают публичные Wi-Fi и родительские фильтры.
-          Часть видео будет недоступна; их можно докачать после смены сети или DNS.
+          Сеть включает «Безопасный режим» YouTube. Так делают публичные Wi-Fi и родительские фильтры.
+          Часть видео будет недоступна, их можно докачать после смены сети или DNS.
         </p>
       </div>
     </ng-template>
