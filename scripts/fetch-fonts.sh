@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Скачивает шрифты сайта (Manrope, JetBrains Mono — SIL OFL 1.1) в web/public/fonts/
-# и пишет web/src/fonts.css с локальными @font-face. Нужен один раз и при
-# смене начертаний: сборка и браузер потом в Google Fonts не ходят.
-# Берутся только кириллица и латиница — других алфавитов в интерфейсе нет.
+# Скачивает шрифты сайта в web/public/fonts/ и пишет web/src/fonts.css
+# с локальными @font-face. Шрифты: Manrope и JetBrains Mono, лицензия SIL OFL 1.1.
+# Запускать нужно один раз и при смене начертаний. После этого сборка
+# и браузер в Google Fonts не ходят.
+# Берутся только кириллица и латиница, других алфавитов в интерфейсе нет.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -19,7 +20,7 @@ out, css_path = sys.argv[1], sys.argv[2]
 css = sys.stdin.read()
 blocks = re.findall(r"/\* ([\w-]+) \*/\s*(@font-face \{.*?\})", css, re.S)
 keep = ("cyrillic", "latin")
-# Google отдаёт вариативные шрифты: у разных насыщенностей один и тот же файл.
+# Google отдаёт вариативные шрифты, у разных насыщенностей один и тот же файл.
 # Склеиваем их в одно @font-face с диапазоном font-weight.
 faces = {}
 for subset, block in blocks:
