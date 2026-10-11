@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -111,7 +112,8 @@ type Summary struct {
 type Library struct {
 	dir string
 
-	mu       sync.Mutex
+	mu       sync.Mutex // данные в памяти; держится недолго
+	writeMu  sync.Mutex // запись файлов по одной; берётся раньше mu
 	channels map[string]*Channel
 	dirty    map[string]bool
 
@@ -223,8 +225,9 @@ func summarize(ch *Channel) Summary {
 
 // Put добавляет канал или обновляет его данные и предел видео.
 func (l *Library) Put(c youtube.Channel, limit int) error {
+	l.writeMu.Lock()
+	defer l.writeMu.Unlock()
 	l.mu.Lock()
-	defer l.mu.Unlock()
 	ch, ok := l.channels[c.ID]
 	if !ok {
 		ch = &Channel{Version: Version, AddedAt: l.now()}
@@ -233,27 +236,35 @@ func (l *Library) Put(c youtube.Channel, limit int) error {
 	ch.Channel = c
 	ch.Limit = limit
 	l.reindexLocked()
-	return l.saveLocked(c.ID)
+	l.mu.Unlock()
+	return l.persist(c.ID)
 }
 
 // Update обновляет данные и предел видео канала, только если он ещё есть:
 // индексатор не должен воскрешать канал, удалённый, пока шёл запрос к API.
 func (l *Library) Update(c youtube.Channel, limit int) error {
+	l.writeMu.Lock()
+	defer l.writeMu.Unlock()
 	l.mu.Lock()
-	defer l.mu.Unlock()
 	ch, ok := l.channels[c.ID]
 	if !ok {
+		l.mu.Unlock()
 		return ErrNoChannel
 	}
 	ch.Channel = c
 	ch.Limit = limit
 	l.reindexLocked()
-	return l.saveLocked(c.ID)
+	l.mu.Unlock()
+	return l.persist(c.ID)
 }
 
 // Remove удаляет канал и его файл. Вызывающий сам останавливает индексацию
 // канала до вызова (indexer.Remove).
 func (l *Library) Remove(id string) error {
+	// writeMu: идущая запись этого канала закончится раньше удаления файла,
+	// иначе она вернула бы файл после os.Remove.
+	l.writeMu.Lock()
+	defer l.writeMu.Unlock()
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if _, ok := l.channels[id]; !ok {
@@ -274,10 +285,12 @@ func (l *Library) Remove(id string) error {
 // выпавшие из списка (канал выложил новые сверх предела), остаются — по
 // ним по-прежнему можно искать.
 func (l *Library) Merge(id string, videos []youtube.Video) error {
+	l.writeMu.Lock()
+	defer l.writeMu.Unlock()
 	l.mu.Lock()
-	defer l.mu.Unlock()
 	ch, ok := l.channels[id]
 	if !ok {
+		l.mu.Unlock()
 		return ErrNoChannel
 	}
 	known := map[string]*Video{}
@@ -304,7 +317,8 @@ func (l *Library) Merge(id string, videos []youtube.Video) error {
 	}
 	ch.Videos = fresh
 	l.reindexLocked()
-	return l.saveLocked(id)
+	l.mu.Unlock()
+	return l.persist(id)
 }
 
 // Todo — видео канала, которые надо (пере)скачать, от новых к старым.
@@ -366,34 +380,60 @@ func (l *Library) MarkIndexed(id string) {
 
 // Flush пишет на диск изменённые каналы.
 func (l *Library) Flush() error {
+	l.writeMu.Lock()
+	defer l.writeMu.Unlock()
 	l.mu.Lock()
-	defer l.mu.Unlock()
+	ids := slices.Collect(maps.Keys(l.dirty))
+	l.mu.Unlock()
+	return l.persist(ids...)
+}
+
+func (l *Library) path(id string) string { return filepath.Join(l.dir, id+".json") }
+
+// persist пишет каналы на диск; вызывающий держит writeMu. Под l.mu
+// берётся только снимок: записи видео не меняются после создания (см.
+// SetResult), так что сериализация и fsync — десятки мегабайт и сотни
+// миллисекунд на большом канале — идут без замка, и поиск, состояние и
+// SetResult их не ждут.
+func (l *Library) persist(ids ...string) error {
 	var errs []error
-	for id := range l.dirty {
-		if err := l.saveLocked(id); err != nil {
+	for _, id := range ids {
+		l.mu.Lock()
+		ch, ok := l.channels[id]
+		if !ok {
+			l.mu.Unlock()
+			continue
+		}
+		snap := *ch
+		snap.Videos = slices.Clone(ch.Videos)
+		delete(l.dirty, id)
+		l.mu.Unlock()
+
+		if err := l.write(id, &snap); err != nil {
+			l.mu.Lock()
+			if _, ok := l.channels[id]; ok {
+				l.dirty[id] = true // повторим при следующей записи
+			}
+			l.mu.Unlock()
 			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)
 }
 
-func (l *Library) path(id string) string { return filepath.Join(l.dir, id+".json") }
-
-func (l *Library) saveLocked(id string) error {
-	ch, ok := l.channels[id]
-	if !ok {
-		return ErrNoChannel
-	}
+func (l *Library) write(id string, ch *Channel) error {
 	raw, err := json.Marshal(ch)
 	if err != nil {
 		return err
 	}
-	if err := writeAtomic(l.path(id), raw); err != nil {
+	if err := writeFile(l.path(id), raw); err != nil {
 		return fmt.Errorf("запись канала %s: %w", ch.Channel.Title, err)
 	}
-	delete(l.dirty, id)
 	return nil
 }
+
+// writeFile — запись файла канала; в тестах подменяется.
+var writeFile = writeAtomic
 
 // writeAtomic пишет файл целиком или не пишет вовсе.
 func writeAtomic(path string, data []byte) error {

@@ -336,3 +336,70 @@ func TestLockDir(t *testing.T) {
 	}
 	again()
 }
+
+func TestFlushDoesNotHoldLockWhileWriting(t *testing.T) {
+	l, dir := newLib(t)
+	l.SetResult(bbc.ID, "v1", StatusOK, lines("текст"), "")
+
+	writing, release := make(chan struct{}), make(chan struct{})
+	writeFile = func(path string, data []byte) error {
+		close(writing)
+		<-release
+		return writeAtomic(path, data)
+	}
+	defer func() { writeFile = writeAtomic }()
+
+	flushed := make(chan error)
+	go func() { flushed <- l.Flush() }()
+	<-writing
+
+	// Пока файл пишется, чтение и SetResult не ждут записи.
+	done := make(chan struct{})
+	go func() {
+		l.Summaries()
+		l.Search("текст", "")
+		l.SetResult(bbc.ID, "v2", StatusOK, lines("второе"), "")
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("библиотека заблокирована на время записи")
+	}
+
+	// Удаление ждёт конца записи и не даёт ей вернуть файл.
+	removed := make(chan error)
+	go func() { removed <- l.Remove(bbc.ID) }()
+	select {
+	case <-removed:
+		t.Fatal("удаление не дождалось идущей записи")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	if err := <-flushed; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-removed; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "channels", bbc.ID+".json")); !os.IsNotExist(err) {
+		t.Error("файл удалённого канала вернулся")
+	}
+}
+
+func TestFailedWriteStaysDirty(t *testing.T) {
+	l, dir := newLib(t)
+	l.SetResult(bbc.ID, "v1", StatusOK, lines("текст"), "")
+	writeFile = func(string, []byte) error { return errors.New("диск полон") }
+	if err := l.Flush(); err == nil {
+		t.Fatal("ошибка записи потерялась")
+	}
+	writeFile = writeAtomic
+	if err := l.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	again, _ := Open(dir)
+	if s, _ := again.Summary(bbc.ID); s.Counts.OK != 1 {
+		t.Errorf("после повторной записи: %+v", s.Counts)
+	}
+}
