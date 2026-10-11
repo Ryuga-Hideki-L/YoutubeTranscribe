@@ -2,3 +2,9 @@
 logs.txt
 cache.json
 node_modules/
+
+# Сборки
+bin/
+dist/
+server/internal/web/static/*
+!server/internal/web/static/.gitkeep
