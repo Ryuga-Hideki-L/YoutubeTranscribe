@@ -1,6 +1,6 @@
 import { DestroyRef, Injectable, computed, inject, signal } from '@angular/core';
 
-// Типы — зеркало JSON Go-сервера (server/internal/api, library, indexer).
+// Типы повторяют JSON Go-сервера (server/internal/api, library, indexer).
 
 export type JobState =
   | 'queued'

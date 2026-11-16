@@ -32,7 +32,7 @@ for subset, block in blocks:
     ranges = re.search(r"unicode-range: ([^;]+);", block).group(1)
     face = faces.setdefault((family, subset, src), {"weights": [], "ranges": ranges})
     face["weights"].append(weight)
-result = ["/* Шрифты интерфейса — локальные копии, scripts/fetch-fonts.sh. Manrope и JetBrains Mono: SIL OFL 1.1. */\n"]
+result = ["/* Шрифты интерфейса: локальные копии из scripts/fetch-fonts.sh. Manrope и JetBrains Mono: SIL OFL 1.1. */\n"]
 for (family, subset, src), face in faces.items():
     low, high = min(face["weights"]), max(face["weights"])
     weight = str(low) if low == high else f"{low} {high}"

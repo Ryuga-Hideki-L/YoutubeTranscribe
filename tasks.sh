@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Сборка «Дословно»: Angular (web/) вшивается в Go-сервер (server/).
-#   ./tasks.sh build  — собрать интерфейс и бинарник bin/doslovno
-#   ./tasks.sh run    — собрать и запустить на 127.0.0.1:3000
-#   ./tasks.sh dev    — Go в режиме -dev на :3000 и ng serve на :4200
+#   ./tasks.sh build  - собрать интерфейс и бинарник bin/doslovno
+#   ./tasks.sh run    - собрать и запустить на 127.0.0.1:3000
+#   ./tasks.sh dev    - Go в режиме -dev на :3000 и ng serve на :4200
 #                       Порты задают DOSLOVNO_API_PORT и DOSLOVNO_PORT
-#   ./tasks.sh test   — сборка, тесты Angular и Go, в том числе проверка настоящей сборки
-#   ./tasks.sh clean  — убрать сборки
+#   ./tasks.sh test   - сборка, тесты Angular и Go, в том числе проверка настоящей сборки
+#   ./tasks.sh clean  - убрать сборки
 set -euo pipefail
 cd "$(dirname "$0")"
 

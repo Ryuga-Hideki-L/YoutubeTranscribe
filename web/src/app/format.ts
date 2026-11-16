@@ -66,6 +66,6 @@ export function watchUrl(id: string, seconds: number): string {
 }
 
 export function thumbUrl(id: string): string {
-  // mqdefault — 16:9 без чёрных полос, которые есть у hqdefault.
+  // mqdefault даёт 16:9 без чёрных полос, которые есть у hqdefault.
   return `https://i.ytimg.com/vi/${encodeURIComponent(id)}/mqdefault.jpg`;
 }

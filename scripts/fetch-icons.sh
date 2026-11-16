@@ -30,7 +30,7 @@ for name in names:
 union = "\n".join(f"  | '{n}'" for n in names)
 out = f"""import {{ ChangeDetectionStrategy, Component, input }} from '@angular/core';
 
-// Сгенерировано scripts/fetch-icons.sh из Lucide {version} (ISC) — не править руками.
+// Сгенерировано scripts/fetch-icons.sh из Lucide {version} (ISC), не править руками.
 
 export type IconName =
 {union};

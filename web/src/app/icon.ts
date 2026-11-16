@@ -1,6 +1,6 @@
 import { ChangeDetectionStrategy, Component, input } from '@angular/core';
 
-// Сгенерировано scripts/fetch-icons.sh из Lucide 1.55.0 (ISC) — не править руками.
+// Сгенерировано scripts/fetch-icons.sh из Lucide 1.55.0 (ISC), не править руками.
 
 export type IconName =
   | 'search'
