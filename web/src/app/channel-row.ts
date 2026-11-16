@@ -7,12 +7,12 @@ import {
   linkedSignal,
   signal,
 } from '@angular/core';
-import { ACTIVE_STATES, Api, ApiError, ChannelView } from './api';
+import { ACTIVE_STATES, Api, ApiError, ChannelView, JobState } from './api';
 import { Clock } from './countdown-clock';
 import { clock, countdown, plural } from './format';
 import { Icon } from './icon';
 
-const STATE_LABEL: Record<string, string> = {
+const STATE_LABEL: Record<JobState, string> = {
   queued: 'в очереди',
   listing: 'список видео…',
   running: 'идёт',
@@ -300,7 +300,7 @@ export class ChannelRow {
     const job = this.channel().job;
     if (!job) return '';
     if (job.state === 'cooling') return `пауза ${this.remaining()}`;
-    return STATE_LABEL[job.state] ?? '';
+    return STATE_LABEL[job.state];
   });
 
   protected readonly percent = computed(() => {
