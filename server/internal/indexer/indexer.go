@@ -415,18 +415,15 @@ func (indexer *Indexer) saveBreakerLocked() {
 	}
 }
 
-// finish заканчивает задание. Необязательный reason — причина для интерфейса,
-// например ReasonNetwork при остановке без сети.
-func (indexer *Indexer) finish(id string, state State, errText string, reason ...string) {
+// finish заканчивает задание. reason - причина для интерфейса, например
+// ReasonNetwork при остановке без сети, или пустая строка
+func (indexer *Indexer) finish(id string, state State, errText, reason string) {
 	if err := indexer.lib.Flush(); err != nil {
 		log.Printf("запись библиотеки: %v", err)
 	}
 	indexer.update(id, func(job *Job) {
 		job.State, job.Error, job.Current = state, errText, ""
-		job.CooldownUntil, job.Reason = time.Time{}, ""
-		if len(reason) > 0 {
-			job.Reason = reason[0]
-		}
+		job.CooldownUntil, job.Reason = time.Time{}, reason
 		job.FinishedAt = indexer.cfg.Now()
 	})
 }
@@ -443,13 +440,13 @@ func (indexer *Indexer) run(ctx context.Context, id string) {
 	if err := indexer.list(ctx, id, limit); err != nil {
 		if ctx.Err() != nil || errors.Is(err, library.ErrNoChannel) {
 			// Отменили или канал удалили, пока шёл запрос к API.
-			indexer.finish(id, StateCancelled, "")
+			indexer.finish(id, StateCancelled, "", "")
 			return
 		}
 		// Без свежего списка можно доделать уже известные видео. Так бывает,
 		// когда нет ключа или кончилась квота.
 		if len(indexer.lib.Todo(id)) == 0 {
-			indexer.finish(id, StateFailed, err.Error())
+			indexer.finish(id, StateFailed, err.Error(), "")
 			return
 		}
 		log.Printf("список видео канала %s не обновлён: %v", id, err)
@@ -462,7 +459,7 @@ func (indexer *Indexer) run(ctx context.Context, id string) {
 	for i := 0; i < len(todo); {
 		video := todo[i]
 		if err := indexer.waitBreaker(ctx, id); err != nil {
-			indexer.finish(id, StateCancelled, "")
+			indexer.finish(id, StateCancelled, "", "")
 			return
 		}
 		indexer.update(id, func(job *Job) { job.Current = video.Title })
@@ -471,7 +468,7 @@ func (indexer *Indexer) run(ctx context.Context, id string) {
 		fetched, err := indexer.fetcher.Fetch(fetchCtx, video.ID)
 		cancel()
 		if ctx.Err() != nil {
-			indexer.finish(id, StateCancelled, "")
+			indexer.finish(id, StateCancelled, "", "")
 			return
 		}
 		// Нет сети. С видео при этом всё может быть в порядке, поэтому статус
@@ -485,7 +482,7 @@ func (indexer *Indexer) run(ctx context.Context, id string) {
 				return
 			}
 			if err := indexer.pause(ctx, id, ReasonNetwork, indexer.cfg.NetPause<<(netFails-1)); err != nil {
-				indexer.finish(id, StateCancelled, "")
+				indexer.finish(id, StateCancelled, "", "")
 				return
 			}
 			continue
@@ -503,7 +500,7 @@ func (indexer *Indexer) run(ctx context.Context, id string) {
 			stop, until := indexer.blocked()
 			log.Printf("блокировка на %s (%s), пауза до %s", video.ID, errText, until.Format(time.TimeOnly))
 			if stop {
-				indexer.finish(id, StateBlocked, errText)
+				indexer.finish(id, StateBlocked, errText, "")
 				return
 			}
 			continue // то же видео после паузы
@@ -530,13 +527,13 @@ func (indexer *Indexer) run(ctx context.Context, id string) {
 		if i < len(todo) {
 			pause := indexer.cfg.Delay + rand.N(indexer.cfg.Jitter+1)
 			if err := indexer.cfg.Sleep(ctx, pause); err != nil {
-				indexer.finish(id, StateCancelled, "")
+				indexer.finish(id, StateCancelled, "", "")
 				return
 			}
 		}
 	}
 	indexer.lib.MarkIndexed(id)
-	indexer.finish(id, StateDone, "")
+	indexer.finish(id, StateDone, "", "")
 }
 
 // list обновляет данные канала и список его видео.
