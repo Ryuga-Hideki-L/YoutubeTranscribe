@@ -6,3 +6,6 @@ dist/
 .angular/
 server/internal/web/static/*
 !server/internal/web/static/.gitkeep
+
+# Ключи и настройки этой машины, образец в .env.example
+.env

@@ -9,7 +9,7 @@
 Нужен ключ YouTube Data API v3 ([Google Cloud Console → Credentials](https://console.cloud.google.com/apis/credentials)). Им ищется канал и список его видео. Сами субтитры скачиваются без ключа.
 
 ```sh
-# вписать ключ в строку YOUTUBE_API_KEY= в файле .env
+cp .env.example .env    # затем вписать ключ в строку YOUTUBE_API_KEY=
 ./tasks.sh run          # собрать и запустить: http://127.0.0.1:3000
 ```
 
