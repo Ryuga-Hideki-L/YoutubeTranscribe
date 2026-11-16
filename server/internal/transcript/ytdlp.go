@@ -80,28 +80,7 @@ func (ytdlp *YtDlp) Fetch(ctx context.Context, videoID string) (*Transcript, err
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 30 * time.Second}
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, track.URL, nil)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return nil, transportError(err)
-	}
-	defer resp.Body.Close()
-	var body bytes.Buffer
-	if _, err := body.ReadFrom(resp.Body); err != nil {
-		return nil, transportError(err)
-	}
-	switch {
-	case resp.StatusCode == http.StatusTooManyRequests:
-		return nil, ErrBlocked
-	case resp.StatusCode >= 300:
-		return nil, fmt.Errorf("YouTube ответил %s на дорожку yt-dlp", resp.Status)
-	case len(bytes.TrimSpace(body.Bytes())) == 0:
-		return nil, ErrPoToken
-	}
-	lines, err := Parse(body.Bytes())
+	lines, err := fetchTrack(ctx, httpClient, track.URL)
 	if err != nil {
 		return nil, err
 	}

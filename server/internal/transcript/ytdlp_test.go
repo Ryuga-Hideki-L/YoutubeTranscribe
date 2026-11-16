@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -71,6 +72,21 @@ func TestYtDlpErrors(t *testing.T) {
 	ytdlp = &YtDlp{Path: fakeYtDlp(t, `{"language":"en","subtitles":{},"automatic_captions":{}}`, "", 0)}
 	if _, err := ytdlp.Fetch(context.Background(), "abc"); !errors.Is(err, ErrNoTranscript) {
 		t.Errorf("без дорожек: %v", err)
+	}
+}
+
+// Дорожка запасного пути читается с тем же лимитом, что и основного (#19).
+func TestYtDlpTrackSizeLimit(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(make([]byte, maxResponseBodyBytes+1))
+	}))
+	t.Cleanup(srv.Close)
+	info := fmt.Sprintf(`{"language":"en","subtitles":{"en":[{"ext":"srv1","url":"%s/en"}]}}`, srv.URL)
+
+	_, err := (&YtDlp{Path: fakeYtDlp(t, info, "", 0)}).Fetch(context.Background(), "abc")
+
+	if err == nil || !strings.Contains(err.Error(), "больше") {
+		t.Fatalf("ответ больше лимита: %v", err)
 	}
 }
 

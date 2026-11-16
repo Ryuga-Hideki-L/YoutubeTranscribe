@@ -194,7 +194,7 @@ const maxResponseBodyBytes = 16 << 20
 // Если YouTube просит согласие на cookie, сначала даёт его.
 func (client *Client) watchPage(ctx context.Context, session *http.Client, videoID string) (string, error) {
 	pageURL := client.baseURL + "/watch?v=" + url.QueryEscape(videoID)
-	page, err := client.get(ctx, session, pageURL)
+	page, err := get(ctx, session, pageURL)
 	if err != nil {
 		return "", err
 	}
@@ -207,7 +207,7 @@ func (client *Client) watchPage(ctx context.Context, session *http.Client, video
 		session.Jar.SetCookies(base, []*http.Cookie{{
 			Name: "CONSENT", Value: "YES+" + string(match[1]), Path: "/",
 		}})
-		if page, err = client.get(ctx, session, pageURL); err != nil {
+		if page, err = get(ctx, session, pageURL); err != nil {
 			return "", err
 		}
 		if bytes.Contains(page, consentFormMarker) {
@@ -272,7 +272,7 @@ func (client *Client) player(ctx context.Context, session *http.Client, key, vid
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	raw, err := client.do(session, req)
+	raw, err := do(session, req)
 	if err != nil {
 		return nil, err
 	}
@@ -368,11 +368,17 @@ func (client *Client) download(ctx context.Context, session *http.Client, track 
 	if needsPoToken(track.URL) {
 		return nil, ErrPoToken
 	}
-	raw, err := client.get(ctx, session, track.URL)
+	return fetchTrack(ctx, session, track.URL)
+}
+
+// fetchTrack скачивает и разбирает дорожку по её адресу.
+// Им пользуются и основной путь, и запасной через yt-dlp.
+func fetchTrack(ctx context.Context, session *http.Client, trackURL string) ([]Line, error) {
+	raw, err := get(ctx, session, trackURL)
 	if err != nil {
 		return nil, err
 	}
-	// Пустой ответ с кодом 200 — так YouTube отказывает без PO-токена.
+	// Пустой ответ с кодом 200 - так YouTube отказывает без PO-токена
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return nil, ErrPoToken
 	}
@@ -436,28 +442,32 @@ func cleanText(text string) string {
 	return strings.Join(strings.Fields(text), " ")
 }
 
-func (client *Client) get(ctx context.Context, session *http.Client, requestURL string) ([]byte, error) {
+func get(ctx context.Context, session *http.Client, requestURL string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 	if err != nil {
 		return nil, err
 	}
 	// Страница видео без браузерного User-Agent бывает урезанной.
 	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0")
-	return client.do(session, req)
+	return do(session, req)
 }
 
 // do выполняет запрос.
 // Код 429 значит блокировку, другие не-2xx дают ошибку с кодом.
-func (client *Client) do(session *http.Client, req *http.Request) ([]byte, error) {
+func do(session *http.Client, req *http.Request) ([]byte, error) {
 	req.Header.Set("Accept-Language", "en-US")
 	resp, err := session.Do(req)
 	if err != nil {
 		return nil, transportError(err)
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodyBytes))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodyBytes+1))
 	if err != nil {
 		return nil, transportError(err)
+	}
+	// Обрезанный ответ не разбирается или разбирается неверно, поэтому ошибка
+	if len(body) > maxResponseBodyBytes {
+		return nil, fmt.Errorf("ответ на %s больше %d байт", req.URL.Path, maxResponseBodyBytes)
 	}
 	switch {
 	case resp.StatusCode == http.StatusTooManyRequests:
