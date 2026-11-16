@@ -1,4 +1,5 @@
 import { DestroyRef, Injectable, computed, effect, inject, signal } from '@angular/core';
+import { readChoice, saveChoice } from './choice-storage';
 
 export type MotionPreference = 'system' | 'on' | 'off';
 
@@ -7,21 +8,12 @@ export type MotionPreference = 'system' | 'on' | 'off';
 const STORAGE_KEY = 'doslovno-motion';
 const reducedQuery = '(prefers-reduced-motion: reduce)';
 
-function readPreference(): MotionPreference {
-  try {
-    const value = localStorage.getItem(STORAGE_KEY);
-    return value === 'on' || value === 'off' ? value : 'system';
-  } catch {
-    return 'system';
-  }
-}
-
 // Анимации включает выбор человека или системная настройка «уменьшить
 // движение». Итог пишется в html[data-motion="on|off"]. По нему CSS глушит
 // переходы, а раскрытие темы смотрит на allowed().
 @Injectable({ providedIn: 'root' })
 export class MotionService {
-  readonly preference = signal<MotionPreference>(readPreference());
+  readonly preference = signal<MotionPreference>(readChoice(STORAGE_KEY, ['on', 'off']));
   private readonly systemReduced = signal(window.matchMedia(reducedQuery).matches);
 
   readonly allowed = computed(() => {
@@ -41,12 +33,7 @@ export class MotionService {
   }
 
   setPreference(preference: MotionPreference) {
-    try {
-      if (preference === 'system') localStorage.removeItem(STORAGE_KEY);
-      else localStorage.setItem(STORAGE_KEY, preference);
-    } catch {
-      // Хранилище недоступно. Выбор живёт до перезагрузки.
-    }
+    saveChoice(STORAGE_KEY, preference);
     this.preference.set(preference);
   }
 }

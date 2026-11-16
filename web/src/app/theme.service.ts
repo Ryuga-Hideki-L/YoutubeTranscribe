@@ -1,4 +1,5 @@
 import { ApplicationRef, DestroyRef, Injectable, inject, signal } from '@angular/core';
+import { readChoice, saveChoice } from './choice-storage';
 import { MotionService } from './motion.service';
 
 export type Theme = 'light' | 'dark';
@@ -8,24 +9,6 @@ export type ThemePreference = 'system' | Theme;
 // Он ставит data-theme до первой отрисовки, чтобы светлая тема не мигала.
 const STORAGE_KEY = 'doslovno-theme';
 const darkQuery = '(prefers-color-scheme: dark)';
-
-function readPreference(): ThemePreference {
-  try {
-    const value = localStorage.getItem(STORAGE_KEY);
-    return value === 'light' || value === 'dark' ? value : 'system';
-  } catch {
-    return 'system';
-  }
-}
-
-function savePreference(preference: ThemePreference) {
-  try {
-    if (preference === 'system') localStorage.removeItem(STORAGE_KEY);
-    else localStorage.setItem(STORAGE_KEY, preference);
-  } catch {
-    // Хранилище недоступно, например в приватном режиме. Выбор живёт до перезагрузки.
-  }
-}
 
 function systemTheme(): Theme {
   return window.matchMedia(darkQuery).matches ? 'dark' : 'light';
@@ -47,7 +30,7 @@ export class ThemeService {
   private readonly motion = inject(MotionService);
   private readonly state = signal<Theme>(currentTheme());
   // preference: выбор человека, включая «как в системе». theme: что в итоге на экране.
-  readonly preference = signal<ThemePreference>(readPreference());
+  readonly preference = signal<ThemePreference>(readChoice(STORAGE_KEY, ['light', 'dark']));
   readonly theme = this.state.asReadonly();
   // Тема, к которой идём. Переход применяет её кадром позже, поэтому
   // новый выбор нельзя сравнивать с DOM. При быстрой смене тёмная →
@@ -75,7 +58,7 @@ export class ThemeService {
   // Новая тема раскрывается кругом из нажатого элемента. Без View Transitions
   // или при выключенных анимациях она меняется сразу.
   setPreference(preference: ThemePreference, origin?: HTMLElement | null) {
-    savePreference(preference);
+    saveChoice(STORAGE_KEY, preference);
     this.preference.set(preference);
     const next = preference === 'system' ? systemTheme() : preference;
     if (next === this.target) return;
