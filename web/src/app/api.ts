@@ -125,11 +125,16 @@ async function request<T>(method: string, url: string, body?: unknown, abortSign
     if (err instanceof DOMException && err.name === 'AbortError') throw err;
     throw new ApiError('network', 'Нет связи с сервером');
   }
-  const data = await response.json().catch(() => null);
   if (!response.ok) {
+    // У ошибки прокси или упавшего сервера тело не JSON, тогда хватает кода ответа
+    const data = await response.json().catch(() => null);
     throw new ApiError(data?.code ?? 'http', data?.error ?? `Сервер ответил ${response.status}`);
   }
-  return data as T;
+  try {
+    return (await response.json()) as T;
+  } catch {
+    throw new ApiError('bad_response', 'Сервер прислал непонятный ответ');
+  }
 }
 
 // Связь с Go-сервером. Состояние библиотеки приходит потоком SSE
