@@ -13,6 +13,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"io/fs"
 	"log"
 	"net"
 	"net/http"
@@ -144,7 +145,11 @@ func defaultDataDir() string {
 // Непустые переменные, уже заданные в окружении, не перезаписываются.
 func loadDotEnv(path string) {
 	file, err := os.Open(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return
+	}
 	if err != nil {
+		log.Printf("%s: %v", path, err)
 		return
 	}
 	defer file.Close()
@@ -163,6 +168,9 @@ func loadDotEnv(path string) {
 		if os.Getenv(key) == "" {
 			os.Setenv(key, value)
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		log.Printf("%s: %v", path, err)
 	}
 }
 
