@@ -334,7 +334,7 @@ export class ChannelRow {
   protected readonly videosLine = computed(() => {
     const counts = this.channel().counts;
     if (counts.total === 0) return 'видео ещё не получены';
-    return `${plural(counts.ok, ['видео', 'видео', 'видео'])} с субтитрами из ${counts.total}`;
+    return `${counts.ok.toLocaleString('ru')} видео с субтитрами из ${counts.total}`;
   });
 
   protected readonly failedLine = computed(() => {

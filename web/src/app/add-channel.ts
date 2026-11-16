@@ -1,6 +1,5 @@
 import { ChangeDetectionStrategy, Component, computed, inject, input, signal } from '@angular/core';
 import { Api, ApiError, Candidate } from './api';
-import { plural } from './format';
 import { Icon } from './icon';
 
 const LIMIT_OPTIONS = [50, 100, 200, 500];
@@ -235,6 +234,6 @@ export class AddChannel {
   }
 
   protected videoCount(candidate: Candidate) {
-    return plural(candidate.videoCount, ['видео', 'видео', 'видео']);
+    return `${candidate.videoCount.toLocaleString('ru')} видео`;
   }
 }

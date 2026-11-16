@@ -2,7 +2,7 @@
 
 const plurals = new Intl.PluralRules('ru');
 
-// Пример: plural(5, ['видео', 'видео', 'видео']). Формы идут в порядке one, few, many.
+// Пример: plural(5, ['совпадение', 'совпадения', 'совпадений']), формы идут в порядке one, few, many
 export function plural(count: number, [one, few, many]: [string, string, string]): string {
   const form = plurals.select(count);
   const word = form === 'one' ? one : form === 'few' ? few : many;
