@@ -14,7 +14,7 @@ import (
 	"github.com/Ryuga-Hideki-L/YoutubeTranscribe/server/internal/youtube"
 )
 
-// fakeLister отдаёт каналы по n видео. Поле err — ошибка получения списка.
+// fakeLister отдаёт каналы по n видео. Поле err задаёт ошибку получения списка.
 type fakeLister struct {
 	n   int
 	err error
@@ -41,7 +41,7 @@ func (lister *fakeLister) Uploads(_ context.Context, playlist string, limit int)
 	return out, nil
 }
 
-// fakeFetcher отвечает по сценарию. errs[i] — ответ на i-й вызов, nil означает успех.
+// fakeFetcher отвечает по сценарию. errs[i] задаёт ответ на i-й вызов, nil означает успех.
 type fakeFetcher struct {
 	mu       sync.Mutex
 	errs     []error
@@ -74,7 +74,7 @@ func (fetcher *fakeFetcher) Fetch(ctx context.Context, id string) (*transcript.T
 	return &transcript.Transcript{Lang: "ru", Lines: []transcript.Line{{Text: "текст " + id}}}, nil
 }
 
-// fakeClock — поддельное время. Sleep сразу сдвигает его вперёд.
+// fakeClock подменяет время. Sleep сразу сдвигает его вперёд.
 type fakeClock struct {
 	mu     sync.Mutex
 	now    time.Time

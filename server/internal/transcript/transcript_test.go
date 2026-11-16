@@ -60,7 +60,7 @@ func TestPickTrack(t *testing.T) {
 	}
 }
 
-// fakeYouTube — сервер, который ведёт себя как YouTube для одного видео.
+// fakeYouTube ведёт себя как YouTube для одного видео.
 type fakeYouTube struct {
 	watchHits  atomic.Int32
 	playerHits atomic.Int32
@@ -260,7 +260,7 @@ func TestRedactHidesQuery(t *testing.T) {
 	if !errors.Is(err, ErrNetwork) {
 		t.Errorf("отказ соединения — не ErrNetwork: %v", err)
 	}
-	// Отмена извне — не «нет сети».
+	// Отмена извне не считается ошибкой «нет сети».
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if _, err := client.Fetch(ctx, "abc"); errors.Is(err, ErrNetwork) || !errors.Is(err, context.Canceled) {

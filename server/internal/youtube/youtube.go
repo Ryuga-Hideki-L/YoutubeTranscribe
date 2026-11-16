@@ -1,4 +1,4 @@
-// Package youtube — клиент YouTube Data API v3. Он находит канал и
+// Package youtube ходит в YouTube Data API v3. Он находит канал и
 // перечисляет его видео. Субтитры этим API не скачать, потому что
 // captions.download работает только для владельца канала. Их берёт пакет
 // transcript.
@@ -22,18 +22,18 @@ import (
 )
 
 var (
-	// ErrNoKey — ключ не задан.
+	// ErrNoKey значит, что ключ не задан.
 	ErrNoKey = errors.New("не задан ключ YouTube Data API (YOUTUBE_API_KEY)")
-	// ErrBadKey — Google не принял ключ.
+	// ErrBadKey значит, что Google не принял ключ.
 	ErrBadKey = errors.New("ключ YouTube Data API не принят")
-	// ErrQuota — дневная квота ключа исчерпана. Квота сбрасывается в полночь
+	// ErrQuota значит, что дневная квота ключа исчерпана. Квота сбрасывается в полночь
 	// по Тихоокеанскому времени.
 	ErrQuota = errors.New("квота YouTube Data API на сегодня исчерпана")
-	// ErrNotFound — канал не найден.
+	// ErrNotFound значит, что канал не найден.
 	ErrNotFound = errors.New("канал не найден")
 )
 
-// Channel — канал YouTube.
+// Channel описывает канал YouTube.
 type Channel struct {
 	ID         string `json:"id"`
 	Title      string `json:"title"`
@@ -43,7 +43,7 @@ type Channel struct {
 	VideoCount int    `json:"videoCount"`
 }
 
-// Video — видео из плейлиста загрузок.
+// Video описывает видео из плейлиста загрузок.
 type Video struct {
 	ID        string    `json:"id"`
 	Title     string    `json:"title"`
@@ -73,7 +73,7 @@ func New(apiKey string, httpClient *http.Client, baseURL string) *Client {
 // HasKey сообщает, задан ли ключ.
 func (client *Client) HasKey() bool { return client.apiKey != "" }
 
-// Query — ввод человека, разобранный по виду.
+// Query хранит ввод человека, разобранный по виду.
 type Query struct {
 	Kind  string // handle, id, username, video, search
 	Value string
@@ -136,7 +136,7 @@ func parseYouTubeURL(input string) *url.URL {
 	return parsed
 }
 
-// channelRefs — ответ videos или search, из которого нужен только ID канала.
+// channelRefs описывает ответ videos или search, из которого нужен только ID канала.
 type channelRefs struct {
 	Items []struct {
 		Snippet struct {
@@ -146,7 +146,7 @@ type channelRefs struct {
 }
 
 // Resolve находит каналы по вводу человека. Для @имени, ссылки или ID это
-// один канал, он стоит 1–2 единицы квоты. Для свободного текста это до 5
+// один канал, он стоит 1-2 единицы квоты. Для свободного текста это до 5
 // кандидатов поиском, он стоит 100 единиц. Поэтому поиск включается только по
 // явной просьбе.
 func (client *Client) Resolve(ctx context.Context, input string) ([]Channel, error) {
@@ -367,7 +367,7 @@ func parseDuration(iso string) int {
 	return total
 }
 
-// apiError — тело ошибки, которое присылает Google.
+// apiError описывает тело ошибки, которое присылает Google.
 type apiError struct {
 	Error struct {
 		Code    int    `json:"code"`

@@ -15,10 +15,10 @@ const (
 	MaxHitLines     = 6 // строк в одном совпадении вместе с соседними
 )
 
-// Mark — подсвеченный кусок строки. Начало и конец считаются в символах.
+// Mark отмечает подсвеченный кусок строки. Начало и конец считаются в символах.
 type Mark [2]int
 
-// HitLine — строка субтитров в совпадении. Строка с фразой несёт подсветку,
+// HitLine описывает строку субтитров в совпадении. Строка с фразой несёт подсветку,
 // соседние строки идут без неё.
 type HitLine struct {
 	Start float64 `json:"s"`
@@ -26,14 +26,14 @@ type HitLine struct {
 	Marks []Mark  `json:"m,omitempty"`
 }
 
-// Hit — одно совпадение: строки с фразой и по строке до и после них.
+// Hit описывает одно совпадение: строки с фразой и по строке до и после них.
 type Hit struct {
 	Start float64   `json:"s"` // когда начинается первая строка с фразой
 	Lines []HitLine `json:"lines"`
 	first int       // номер первой строки совпадения в субтитрах видео
 }
 
-// VideoHits — все совпадения в одном видео.
+// VideoHits собирает все совпадения в одном видео.
 type VideoHits struct {
 	ID           string    `json:"id"`
 	Title        string    `json:"title"`
@@ -45,7 +45,7 @@ type VideoHits struct {
 	Hits         []Hit     `json:"hits"`  // отдаём не больше MaxHitsPerVideo
 }
 
-// Result — ответ поиска.
+// Result описывает ответ поиска.
 type Result struct {
 	Query       string      `json:"query"`
 	TotalHits   int         `json:"totalHits"`
@@ -53,7 +53,7 @@ type Result struct {
 	Videos      []VideoHits `json:"videos"` // не больше MaxVideos
 }
 
-// searchEntry — видео, готовое к поиску. Все его строки склеены в один
+// searchEntry хранит видео, готовое к поиску. Все его строки склеены в один
 // текст через пробел, поэтому находится и фраза, разорванная между строками.
 type searchEntry struct {
 	video      *Video
@@ -62,7 +62,7 @@ type searchEntry struct {
 	lineStarts []int  // где в text начинается каждая строка, в байтах
 }
 
-// searchSnapshot — всё, по чему ищем. Его не меняют, а заменяют целиком,
+// searchSnapshot содержит всё, по чему ищем. Его не меняют, а заменяют целиком,
 // поэтому поиск читает его без замка.
 type searchSnapshot struct {
 	entries       []*searchEntry
@@ -153,7 +153,7 @@ func (lib *Library) Search(query, channelID string) Result {
 			Total: total, Hits: hits,
 		})
 	}
-	// Сначала видео, где совпадений больше, при равенстве — свежие.
+	// Сначала видео, где совпадений больше, при равенстве свежие.
 	sort.Slice(result.Videos, func(i, j int) bool {
 		left, right := result.Videos[i], result.Videos[j]
 		if left.Total != right.Total {
@@ -221,12 +221,12 @@ func (entry *searchEntry) hitLine(line int) HitLine {
 	return HitLine{Start: entry.video.Lines[line].Start, Text: entry.video.Lines[line].Text}
 }
 
-// lineOf — номер строки, в которую попадает байт offset склеенного текста.
+// lineOf возвращает номер строки, в которую попадает байт offset склеенного текста.
 func (entry *searchEntry) lineOf(offset int) int {
 	return sort.Search(len(entry.lineStarts), func(i int) bool { return entry.lineStarts[i] > offset }) - 1
 }
 
-// lineEnd — где кончается строка, без пробела после неё.
+// lineEnd возвращает, где кончается строка, без пробела после неё.
 func (entry *searchEntry) lineEnd(line int) int {
 	if line+1 < len(entry.lineStarts) {
 		return entry.lineStarts[line+1] - 1
@@ -235,7 +235,7 @@ func (entry *searchEntry) lineEnd(line int) int {
 }
 
 // addMarks подсвечивает найденную фразу во всех строках совпадения, которых
-// она касается. matchStart и matchEnd — байты склеенного текста.
+// она касается. matchStart и matchEnd считаются в байтах склеенного текста.
 func (entry *searchEntry) addMarks(hit *Hit, matchStart, matchEnd int) {
 	for i := range hit.Lines {
 		line := hit.first + i

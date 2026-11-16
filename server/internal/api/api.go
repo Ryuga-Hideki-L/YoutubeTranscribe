@@ -1,4 +1,4 @@
-// Package api — HTTP API для интерфейса: каналы, индексация, поиск и поток
+// Package api отдаёт интерфейсу HTTP API: каналы, индексацию, поиск и поток
 // изменений (SSE).
 //
 // Сервер слушает только loopback, но чужая страница в браузере всё равно может
@@ -23,10 +23,10 @@ import (
 	"github.com/Ryuga-Hideki-L/YoutubeTranscribe/server/internal/youtube"
 )
 
-// MaxLimit — больше видео с канала за раз не берём.
+// MaxLimit ограничивает число видео, которое берётся с канала за раз.
 const MaxLimit = 1000
 
-// Server — обработчики API.
+// Server обрабатывает запросы API.
 type Server struct {
 	lib          *library.Library
 	indexing     *indexer.Indexer
@@ -100,13 +100,13 @@ func localHost(hostport string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// ChannelView — канал из библиотеки и его задание на индексацию.
+// ChannelView описывает канал из библиотеки и его задание на индексацию.
 type ChannelView struct {
 	library.Summary
 	Job *indexer.Job `json:"job,omitempty"`
 }
 
-// State — всё, что интерфейсу нужно знать о библиотеке.
+// State содержит всё, что интерфейсу нужно знать о библиотеке.
 // Приходит и обычным ответом, и потоком SSE.
 type State struct {
 	HasKey       bool          `json:"hasKey"`
@@ -139,7 +139,7 @@ func (server *Server) state(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, server.snapshot())
 }
 
-// events — поток SSE. При подключении отправляется полный снимок, потом ещё
+// events отдаёт поток SSE. При подключении отправляется полный снимок, потом ещё
 // один после каждого изменения. EventSource сам переподключается после сна.
 // Снимки идут не чаще 4 раз в секунду. Пока ничего не меняется, обработчик
 // просто ждёт, без таймеров.
@@ -310,7 +310,7 @@ func (server *Server) remove(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, server.snapshot())
 }
 
-// apiError — ошибка для интерфейса. Code нужен логике, Message читает человек.
+// apiError описывает ошибку для интерфейса. Code нужен логике, Message читает человек.
 type apiError struct {
 	Code    string `json:"code"`
 	Message string `json:"error"`

@@ -26,7 +26,7 @@ import (
 //go:embed all:static
 var embedded embed.FS
 
-// Static — вшитая сборка сайта (содержимое static/).
+// Static содержит вшитую сборку сайта, то есть каталог static/.
 func Static() fs.FS {
 	sub, err := fs.Sub(embedded, "static")
 	if err != nil {
@@ -65,7 +65,7 @@ type Site struct {
 	assets map[string]*asset
 }
 
-// ErrNoBuild — в static/ нет index.html, значит фронт не собран (./tasks.sh build).
+// ErrNoBuild значит, что в static/ нет index.html и фронт не собран (./tasks.sh build).
 var ErrNoBuild = errors.New("в сборке нет index.html — сначала ./tasks.sh build (или запуск с -dev)")
 
 // Load читает все файлы сборки, считает ETag и сжатые копии.

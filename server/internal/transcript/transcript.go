@@ -27,37 +27,37 @@ import (
 
 // Ошибки, по которым индексация решает, что делать с видео.
 var (
-	// ErrBlocked — YouTube требует капчу или отвечает 429. С этого адреса
+	// ErrBlocked значит, что YouTube требует капчу или отвечает 429. С этого адреса
 	// запросы временно не пускают, повторять сразу бесполезно.
 	ErrBlocked = errors.New("YouTube временно блокирует запросы с этого адреса")
-	// ErrNoTranscript — у видео нет ни одной дорожки субтитров.
+	// ErrNoTranscript значит, что у видео нет ни одной дорожки субтитров.
 	ErrNoTranscript = errors.New("у видео нет субтитров")
-	// ErrUnavailable — видео удалено, скрыто или недоступно в регионе.
+	// ErrUnavailable значит, что видео удалено, скрыто или недоступно в регионе.
 	ErrUnavailable = errors.New("видео недоступно")
-	// ErrAgeRestricted — видео 18+. Без входа в аккаунт субтитры не отдаются.
+	// ErrAgeRestricted значит, что видео 18+. Без входа в аккаунт субтитры не отдаются.
 	ErrAgeRestricted = errors.New("видео с возрастным ограничением")
-	// ErrPoToken — дорожка требует PO-токен. Без браузера её не скачать.
+	// ErrPoToken значит, что дорожка требует PO-токен. Без браузера её не скачать.
 	ErrPoToken = errors.New("YouTube требует PO-токен для этих субтитров")
-	// ErrNetwork — запрос не дошёл из-за сети, DNS, прокси или таймаута.
+	// ErrNetwork значит, что запрос не дошёл из-за сети, DNS, прокси или таймаута.
 	// С самим видео всё может быть в порядке, поэтому его надо повторить позже.
 	ErrNetwork = errors.New("нет связи с YouTube")
 )
 
-// Line — одна строка субтитров. Start и Dur заданы в секундах.
+// Line описывает одну строку субтитров. Start и Dur заданы в секундах.
 type Line struct {
 	Start float64 `json:"s"`
 	Dur   float64 `json:"d"`
 	Text  string  `json:"t"`
 }
 
-// Transcript — скачанные субтитры одного видео.
+// Transcript хранит скачанные субтитры одного видео.
 type Transcript struct {
 	Lang  string `json:"lang"`
 	Auto  bool   `json:"auto"` // распознаны автоматически (kind=asr)
 	Lines []Line `json:"lines"`
 }
 
-// Track — дорожка субтитров из ответа плеера.
+// Track описывает дорожку субтитров из ответа плеера.
 type Track struct {
 	Lang string
 	Name string
@@ -79,16 +79,16 @@ type Client struct {
 // Options настраивают клиента. Пустые поля берутся по умолчанию.
 type Options struct {
 	HTTP *http.Client
-	// BaseURL — адрес YouTube. В тестах его подменяют.
+	// BaseURL задаёт адрес YouTube. В тестах его подменяют.
 	BaseURL string
-	// ClientVersion — версия клиента Android, под которую мы выдаём себя плееру.
+	// ClientVersion задаёт версию клиента Android, под которую мы выдаём себя плееру.
 	ClientVersion string
-	// Langs — желаемые языки ручных субтитров.
+	// Langs перечисляет желаемые языки ручных субтитров.
 	// Нужны, если у видео нет автоматической дорожки и по ней не видно язык речи.
 	Langs []string
 }
 
-// DefaultClientVersion — версия из youtube-transcript-api 1.2.4.
+// DefaultClientVersion взята из youtube-transcript-api 1.2.4.
 const DefaultClientVersion = "20.10.38"
 
 // New создаёт клиента.
@@ -187,7 +187,7 @@ var (
 	recaptchaMarker     = []byte(`class="g-recaptcha"`)
 )
 
-// maxResponseBodyBytes — больше этого из ответа не читаем.
+// maxResponseBodyBytes ограничивает размер читаемого ответа.
 const maxResponseBodyBytes = 16 << 20
 
 // watchPage открывает страницу видео и достаёт из неё ключ innertube.
@@ -224,7 +224,7 @@ func (client *Client) watchPage(ctx context.Context, session *http.Client, video
 	return string(match[1]), nil
 }
 
-// playerResponse — ответ плеера, только нужные поля.
+// playerResponse описывает нужные поля ответа плеера.
 type playerResponse struct {
 	PlayabilityStatus struct {
 		Status string `json:"status"`
@@ -327,9 +327,9 @@ func (client *Client) player(ctx context.Context, session *http.Client, key, vid
 // Язык речи виден по автоматической дорожке, потому что YouTube распознаёт только исходную речь.
 // Ручные дорожки бывают и переводами, по ним язык речи не определить.
 // Порядок выбора такой:
-//  1. ручная дорожка на языке автоматической;
-//  2. сама автоматическая;
-//  3. ручная дорожка из langs;
+//  1. ручная дорожка на языке автоматической
+//  2. сама автоматическая
+//  3. ручная дорожка из langs
 //  4. первая ручная.
 func pickTrack(tracks []Track, langs []string) Track {
 	var autoTrack *Track
@@ -357,7 +357,7 @@ func pickTrack(tracks []Track, langs []string) Track {
 	return tracks[0]
 }
 
-// sameLang сравнивает коды без региона. «en» и «en-GB» — один язык.
+// sameLang сравнивает коды без региона. «en» и «en-GB» считаются одним языком.
 func sameLang(lang, other string) bool {
 	lang, _, _ = strings.Cut(strings.ToLower(lang), "-")
 	other, _, _ = strings.Cut(strings.ToLower(other), "-")

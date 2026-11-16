@@ -25,10 +25,10 @@ import (
 	"github.com/Ryuga-Hideki-L/YoutubeTranscribe/server/internal/youtube"
 )
 
-// Version — версия формата файла канала.
+// Version задаёт версию формата файла канала.
 const Version = 1
 
-// Status — что получилось с субтитрами видео.
+// Status говорит, что получилось с субтитрами видео.
 type Status string
 
 const (
@@ -63,7 +63,7 @@ func needsFetch(video *Video, now time.Time) bool {
 	return !video.Status.Final()
 }
 
-// Video — видео канала и его субтитры.
+// Video хранит видео канала и его субтитры.
 type Video struct {
 	ID        string            `json:"id"`
 	Title     string            `json:"title"`
@@ -78,7 +78,7 @@ type Video struct {
 	Lines     []transcript.Line `json:"lines,omitempty"`
 }
 
-// Channel — файл канала на диске.
+// Channel описывает файл канала на диске.
 type Channel struct {
 	Version   int             `json:"version"`
 	Channel   youtube.Channel `json:"channel"`
@@ -88,7 +88,7 @@ type Channel struct {
 	Videos    []*Video        `json:"videos"`
 }
 
-// Counts — сводка по видео канала.
+// Counts хранит сводку по видео канала.
 type Counts struct {
 	Total      int `json:"total"`
 	OK         int `json:"ok"`
@@ -98,7 +98,7 @@ type Counts struct {
 	Lines      int `json:"lines"`
 }
 
-// Summary — канал без субтитров, для списка каналов.
+// Summary описывает канал без субтитров, для списка каналов.
 type Summary struct {
 	youtube.Channel
 	Limit     int       `json:"limit"`
@@ -107,7 +107,7 @@ type Summary struct {
 	Counts    Counts    `json:"counts"`
 }
 
-// Library — все каналы в памяти и их файлы.
+// Library держит все каналы в памяти и пишет их файлы.
 type Library struct {
 	dir string
 
@@ -121,7 +121,7 @@ type Library struct {
 	entries  map[*Video]*searchEntry        // готовые к поиску видео, чтобы не собирать заново
 }
 
-// ErrNoChannel — канала нет в библиотеке.
+// ErrNoChannel значит, что канала нет в библиотеке.
 var ErrNoChannel = errors.New("канала нет в библиотеке")
 
 // Open читает каналы из dir/channels.
@@ -180,7 +180,7 @@ func readChannel(path string) (*Channel, error) {
 	return &channel, nil
 }
 
-// Summaries — все каналы по порядку добавления.
+// Summaries возвращает все каналы по порядку добавления.
 func (lib *Library) Summaries() []Summary {
 	lib.mu.Lock()
 	defer lib.mu.Unlock()
@@ -192,7 +192,7 @@ func (lib *Library) Summaries() []Summary {
 	return out
 }
 
-// Summary — один канал.
+// Summary возвращает один канал.
 func (lib *Library) Summary(id string) (Summary, bool) {
 	lib.mu.Lock()
 	defer lib.mu.Unlock()
@@ -320,7 +320,7 @@ func (lib *Library) Merge(id string, videos []youtube.Video) error {
 	return lib.persist(id)
 }
 
-// Todo — видео канала, которые надо (пере)скачать, от новых к старым.
+// Todo возвращает видео канала, которые надо скачать или перескачать, от новых к старым.
 func (lib *Library) Todo(id string) []Video {
 	lib.mu.Lock()
 	defer lib.mu.Unlock()
@@ -431,7 +431,7 @@ func (lib *Library) write(id string, channel *Channel) error {
 	return nil
 }
 
-// writeFile — запись файла канала; в тестах подменяется.
+// writeFile записывает файл канала, тесты её подменяют.
 var writeFile = writeAtomic
 
 // writeAtomic пишет файл целиком или не пишет вовсе.

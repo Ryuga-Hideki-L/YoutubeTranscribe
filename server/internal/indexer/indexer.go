@@ -23,7 +23,7 @@ import (
 	"github.com/Ryuga-Hideki-L/YoutubeTranscribe/server/internal/youtube"
 )
 
-// State — состояние задания канала.
+// State описывает состояние задания канала.
 type State string
 
 const (
@@ -43,7 +43,7 @@ const (
 	ReasonNetwork = "network" // нет связи с YouTube
 )
 
-// Job — задание индексации канала (последнее по времени).
+// Job описывает последнее по времени задание индексации канала.
 type Job struct {
 	ChannelID     string    `json:"channelId"`
 	State         State     `json:"state"`
@@ -72,7 +72,7 @@ type Lister interface {
 	Uploads(ctx context.Context, playlist string, limit int) ([]youtube.Video, error)
 }
 
-// Config — ритм и предохранитель. Нулевое поле означает значение по умолчанию.
+// Config задаёт ритм запросов и предохранитель. Нулевое поле означает значение по умолчанию.
 type Config struct {
 	Delay       time.Duration // пауза между видео (1 с)
 	Jitter      time.Duration // плюс случайно до (1 с)
@@ -138,14 +138,14 @@ func sleep(ctx context.Context, duration time.Duration) error {
 	}
 }
 
-// breaker — общий предохранитель, файл state.json.
+// breaker хранит общий предохранитель в файле state.json.
 type breaker struct {
 	Version      int       `json:"version"`
 	BlockedUntil time.Time `json:"blockedUntil,omitzero"`
 	Blocks       int       `json:"blocks"` // блокировок подряд
 }
 
-// Indexer — очередь и рабочий.
+// Indexer держит очередь каналов и рабочего, который их индексирует.
 type Indexer struct {
 	lib     *library.Library
 	lister  Lister
@@ -318,7 +318,7 @@ func (indexer *Indexer) Forget(id string) {
 	indexer.notify()
 }
 
-// Jobs — копии заданий по каналам.
+// Jobs возвращает копии заданий по каналам.
 func (indexer *Indexer) Jobs() map[string]Job {
 	indexer.mu.Lock()
 	defer indexer.mu.Unlock()
@@ -329,7 +329,7 @@ func (indexer *Indexer) Jobs() map[string]Job {
 	return out
 }
 
-// BlockedUntil — до какого времени действует предохранитель.
+// BlockedUntil возвращает время, до которого действует предохранитель.
 func (indexer *Indexer) BlockedUntil() time.Time {
 	indexer.mu.Lock()
 	defer indexer.mu.Unlock()
@@ -561,7 +561,7 @@ func (indexer *Indexer) waitBreaker(ctx context.Context, id string) error {
 	return indexer.pause(ctx, id, ReasonBlocked, until.Sub(indexer.cfg.Now()))
 }
 
-// pause — пауза задания с причиной и обратным отсчётом в интерфейсе.
+// pause приостанавливает задание, причина и обратный отсчёт видны в интерфейсе.
 func (indexer *Indexer) pause(ctx context.Context, id, reason string, duration time.Duration) error {
 	until := indexer.cfg.Now().Add(duration)
 	indexer.update(id, func(job *Job) { job.State, job.Reason, job.CooldownUntil = StateCooling, reason, until })

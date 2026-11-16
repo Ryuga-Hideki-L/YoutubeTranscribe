@@ -13,9 +13,9 @@ import (
 	"time"
 )
 
-// YtDlp — запасной путь через yt-dlp.
+// YtDlp скачивает субтитры запасным путём через yt-dlp.
 // Он сам добывает PO-токены и быстрее подстраивается под изменения YouTube.
-// Зато он медленнее: 4–5 запросов и 5–20 с на видео, а у основного пути два запроса и около секунды.
+// Зато он медленнее: 4-5 запросов и 5-20 с на видео, а у основного пути два запроса и около секунды.
 // yt-dlp только отдаёт список дорожек (-J).
 // Саму дорожку качает наш код.
 type YtDlp struct {
@@ -34,13 +34,13 @@ func FindYtDlp() string {
 	return path
 }
 
-// ytdlpFormat — один вариант дорожки в выводе yt-dlp.
+// ytdlpFormat описывает один вариант дорожки в выводе yt-dlp.
 type ytdlpFormat struct {
 	Ext string `json:"ext"`
 	URL string `json:"url"`
 }
 
-// ytdlpInfo — нужные поля вывода yt-dlp -J.
+// ytdlpInfo описывает нужные поля вывода yt-dlp -J.
 type ytdlpInfo struct {
 	Language          string                   `json:"language"`
 	Subtitles         map[string][]ytdlpFormat `json:"subtitles"`
@@ -93,7 +93,7 @@ func (ytdlp *YtDlp) Fetch(ctx context.Context, videoID string) (*Transcript, err
 // pick выбирает дорожку по тем же правилам, что pickTrack.
 // Исходную речь yt-dlp помечает в automatic_captions ключом «<язык>-orig».
 // Если такого ключа нет, язык речи берётся из поля language.
-// Остальные автоматические дорожки — машинные переводы.
+// Остальные автоматические дорожки это машинные переводы.
 func (info ytdlpInfo) pick(langs []string) (Track, bool) {
 	srv1URL := func(formats []ytdlpFormat) string {
 		for _, format := range formats {

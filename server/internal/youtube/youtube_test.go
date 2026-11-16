@@ -42,7 +42,7 @@ func TestParseDuration(t *testing.T) {
 	}
 }
 
-// fakeAPI отдаёт плейлист из pages страниц по 3 видео. Третье видео на странице — трансляция.
+// fakeAPI отдаёт плейлист из pages страниц по 3 видео. Третье видео на странице это трансляция.
 func fakeAPI(t *testing.T, pages int) *httptest.Server {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("X-Goog-Api-Key") != "KEY" || r.URL.Query().Has("key") {
@@ -64,7 +64,7 @@ func fakeAPI(t *testing.T, pages int) *httptest.Server {
 					"status":         map[string]any{"privacyStatus": "public"},
 				})
 			}
-			// Удалённое видео — без даты публикации.
+			// У удалённого видео нет даты публикации.
 			items = append(items, map[string]any{"contentDetails": map[string]any{"videoId": "deleted0000"}})
 			resp := map[string]any{"items": items}
 			if page+1 < pages {

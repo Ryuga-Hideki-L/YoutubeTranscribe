@@ -153,7 +153,7 @@ func TestSearch(t *testing.T) {
 		if videoHits.ID != "v1" || videoHits.Total != 2 {
 			t.Fatalf("первое видео %s (%d)", videoHits.ID, videoHits.Total)
 		}
-		// Два вхождения в одной строке — одно совпадение с двумя подсветками.
+		// Два вхождения в одной строке дают одно совпадение с двумя подсветками.
 		last := videoHits.Hits[1]
 		line := last.Lines[len(last.Lines)-1]
 		if line.Text != "и снова ёлка, ёлка" || fmt.Sprint(line.Marks) != "[[8 12] [14 18]]" {
@@ -293,7 +293,7 @@ func TestFreshVideoWithoutCaptionsIsRechecked(t *testing.T) {
 	lib, _ := newLib(t)
 	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
 	lib.now = func() time.Time { return now }
-	// v3 опубликовано 3 октября (6,5 дня назад), v1 — 1 октября (8,5 дня).
+	// v3 опубликовано 3 октября (6,5 дня назад), v1 опубликовано 1 октября (8,5 дня).
 	lib.SetResult(bbc.ID, "v3", StatusNoCaptions, nil, "")
 	lib.SetResult(bbc.ID, "v1", StatusNoCaptions, nil, "")
 	lib.SetResult(bbc.ID, "v2", StatusOK, transcriptOf("текст"), "")
